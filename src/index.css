@@ -2,104 +2,134 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here.
 All colors MUST be HSL.
 */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 150 20% 8%;
+    --foreground: 150 10% 95%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card: 150 18% 12%;
+    --card-foreground: 150 10% 95%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover: 150 20% 10%;
+    --popover-foreground: 150 10% 95%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 150 80% 45%;
+    --primary-foreground: 150 20% 8%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 150 30% 20%;
+    --secondary-foreground: 150 10% 95%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 150 15% 18%;
+    --muted-foreground: 150 8% 60%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 150 70% 50%;
+    --accent-foreground: 150 20% 8%;
 
     --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 150 10% 95%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 150 20% 20%;
+    --input: 150 20% 20%;
+    --ring: 150 80% 45%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
 
-    --sidebar-background: 0 0% 98%;
+    /* Pump-themed gradients */
+    --gradient-hero: linear-gradient(135deg, hsl(150 60% 15%), hsl(150 40% 8%));
+    --gradient-card: linear-gradient(180deg, hsl(150 25% 12%), hsl(150 20% 10%));
+    --gradient-accent: linear-gradient(135deg, hsl(150 80% 45%), hsl(150 70% 55%));
 
-    --sidebar-foreground: 240 5.3% 26.1%;
+    /* Glow effects for buttons */
+    --glow-primary: 0 0 30px hsl(150 80% 45% / 0.4);
+    --glow-accent: 0 0 40px hsl(150 70% 50% / 0.5);
 
-    --sidebar-primary: 240 5.9% 10%;
+    /* Transitions */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-background: 150 20% 10%;
+    --sidebar-foreground: 150 10% 95%;
+    --sidebar-primary: 150 80% 45%;
+    --sidebar-primary-foreground: 150 20% 8%;
+    --sidebar-accent: 150 30% 20%;
+    --sidebar-accent-foreground: 150 10% 95%;
+    --sidebar-border: 150 20% 20%;
+    --sidebar-ring: 150 80% 45%;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    --background: 150 20% 8%;
+    --foreground: 150 10% 95%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 150 18% 12%;
+    --card-foreground: 150 10% 95%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 150 20% 10%;
+    --popover-foreground: 150 10% 95%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 150 80% 45%;
+    --primary-foreground: 150 20% 8%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 150 30% 20%;
+    --secondary-foreground: 150 10% 95%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 150 15% 18%;
+    --muted-foreground: 150 8% 60%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 150 70% 50%;
+    --accent-foreground: 150 20% 8%;
 
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 150 10% 95%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --border: 150 20% 20%;
+    --input: 150 20% 20%;
+    --ring: 150 80% 45%;
+    --sidebar-background: 150 20% 10%;
+    --sidebar-foreground: 150 10% 95%;
+    --sidebar-primary: 150 80% 45%;
+    --sidebar-primary-foreground: 150 20% 8%;
+    --sidebar-accent: 150 30% 20%;
+    --sidebar-accent-foreground: 150 10% 95%;
+    --sidebar-border: 150 20% 20%;
+    --sidebar-ring: 150 80% 45%;
   }
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
 
   body {
-    @apply bg-background text-foreground;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    background-attachment: fixed;
   }
+}
+
+/* Wallet adapter custom styles */
+.wallet-adapter-button {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  transition: all 0.3s ease;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+  box-shadow: var(--glow-primary);
+}
+
+.wallet-adapter-button:hover {
+  opacity: 0.9;
+  box-shadow: var(--glow-accent);
+}
+
+.wallet-adapter-modal-wrapper {
+  background-color: hsl(var(--card) / 0.95);
+  backdrop-filter: blur(8px);
+  border: 1px solid hsl(var(--border));
+  border-radius: 1rem;
 }
