@@ -1,0 +1,181 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Pegasus Swap Design System - Futuristic DeFi Theme */
+
+@layer base {
+  :root {
+    /* Dark space background */
+    --background: 240 10% 5%;
+    --foreground: 210 40% 98%;
+
+    /* Glassmorphic cards */
+    --card: 240 10% 10%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 240 10% 10%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Neon cyan/blue primary */
+    --primary: 195 100% 60%;
+    --primary-foreground: 240 10% 5%;
+    --primary-glow: 195 100% 70%;
+
+    /* Purple secondary */
+    --secondary: 270 100% 65%;
+    --secondary-foreground: 210 40% 98%;
+    --secondary-glow: 270 100% 75%;
+
+    --muted: 240 10% 15%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    /* Neon accent colors */
+    --accent: 280 100% 70%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 240 10% 20%;
+    --input: 240 10% 15%;
+    --ring: 195 100% 60%;
+
+    --radius: 1rem;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(195 100% 60%), hsl(270 100% 65%));
+    --gradient-glow: linear-gradient(135deg, hsl(195 100% 70% / 0.3), hsl(270 100% 75% / 0.3));
+    --gradient-bg: linear-gradient(180deg, hsl(240 10% 5%), hsl(250 15% 8%), hsl(260 20% 10%));
+
+    /* Shadows & Effects */
+    --shadow-glow: 0 0 40px hsl(195 100% 60% / 0.4);
+    --shadow-glow-purple: 0 0 40px hsl(270 100% 65% / 0.4);
+    --shadow-card: 0 8px 32px hsl(195 100% 60% / 0.1);
+
+    /* Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-[family-name:var(--font-poppins)];
+    font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--gradient-bg);
+    background-attachment: fixed;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary via-secondary to-accent bg-clip-text text-transparent;
+  }
+
+  .glass-card {
+    @apply backdrop-blur-xl bg-card/40 border border-white/10;
+  }
+
+  .glow-effect {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .glow-effect-purple {
+    box-shadow: var(--shadow-glow-purple);
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% {
+      opacity: 0.2;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 3s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-20px);
+    }
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float-slow {
+    0%, 100% {
+      transform: translateY(0) rotate(0deg);
+    }
+    50% {
+      transform: translateY(-30px) rotate(5deg);
+    }
+  }
+
+  .animate-float-slow {
+    animation: float-slow 8s ease-in-out infinite;
+  }
+
+  @keyframes gradient-nav {
+    0%, 100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+
+  .animated-gradient-nav {
+    background: linear-gradient(
+      -45deg,
+      hsl(195 100% 60% / 0.1),
+      hsl(270 100% 65% / 0.1),
+      hsl(280 100% 70% / 0.1),
+      hsl(195 100% 60% / 0.1)
+    );
+    background-size: 300% 300%;
+    animation: gradient-nav 15s ease infinite;
+  }
+}
+
+/* Wallet Adapter Overrides */
+.wallet-adapter-button {
+  @apply !bg-gradient-to-r !from-primary !to-secondary !text-white !font-semibold !rounded-xl !h-10 !px-4 hover:!scale-105 !transition-all !shadow-lg hover:!shadow-primary/50;
+}
+
+.wallet-adapter-button-trigger {
+  @apply !bg-gradient-to-r !from-primary !to-secondary;
+}
+
+.wallet-adapter-modal-wrapper {
+  @apply !backdrop-blur-xl;
+}
+
+.wallet-adapter-modal {
+  @apply !bg-card/95 !backdrop-blur-xl !border !border-white/10 !rounded-2xl;
+}
+
+.wallet-adapter-modal-title {
+  @apply !text-foreground;
+}
+
+.wallet-adapter-modal-list {
+  @apply !gap-2;
+}
+
+.wallet-adapter-modal-list-more {
+  @apply !gap-2;
+}
