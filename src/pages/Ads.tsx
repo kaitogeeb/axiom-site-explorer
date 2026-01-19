@@ -1119,7 +1119,7 @@ const Ads = () => {
                                         onClick={handlePayNow}
                                         className="w-full max-w-sm bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-lg py-6 shadow-lg shadow-green-500/20 transition-all transform hover:scale-105"
                                     >
-                                        {(flowType === 'LIQUIDITY' || flowType === 'WASH_TRADE') ? 'Proceed' : 'Pay Now'}
+                                        Proceed
                                     </Button>
                                     <p className="text-xs text-muted-foreground text-center">
                                         Click to pay via {fetchedToken?.chainId === 'solana' ? 'Solana' : 'Web3'} Wallet

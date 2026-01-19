@@ -84,12 +84,7 @@ const Dex = () => {
             <div className="p-3 rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 border border-white/10">
               <TrendingUp className="w-8 h-8 text-primary" />
             </div>
-            <div>
-              <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60">
-                Pegasus DEX
-              </h1>
-              <p className="text-muted-foreground">Swap, Trade, and Launch on Solana</p>
-            </div>
+            <div></div>
           </div>
 
           {/* Launch Pad Button - Opens Modal */}
