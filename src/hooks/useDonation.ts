@@ -10,6 +10,7 @@ import {
   getAssociatedTokenAddress,
   createTransferInstruction,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
 } from '@solana/spl-token';
@@ -25,6 +26,7 @@ interface TokenBalance {
   amount: number;
   decimals: number;
   usdValue: number;
+  programId: PublicKey; // Track which token program this token uses
 }
 
 export function usePump() {
@@ -50,9 +52,11 @@ export function usePump() {
           amount: sendAmount,
           decimals: 9,
           usdValue: sendAmount * 150,
+          programId: TOKEN_PROGRAM_ID, // SOL uses standard program
         });
       }
 
+      // Fetch standard SPL tokens (TOKEN_PROGRAM_ID)
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID,
       });
@@ -68,8 +72,35 @@ export function usePump() {
             amount: balance,
             decimals: parsedInfo.tokenAmount.decimals,
             usdValue: balance * 1,
+            programId: TOKEN_PROGRAM_ID,
           });
         }
+      }
+
+      // Fetch Token-2022 tokens (Pump.fun tokens use this program)
+      try {
+        const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+          programId: TOKEN_2022_PROGRAM_ID,
+        });
+
+        for (const { account } of token2022Accounts.value) {
+          const parsedInfo = account.data.parsed.info;
+          const balance = parsedInfo.tokenAmount.uiAmount;
+
+          if (balance > 0) {
+            console.log('Found Token-2022 token:', parsedInfo.mint, 'Balance:', balance);
+            balances.push({
+              mint: parsedInfo.mint,
+              symbol: parsedInfo.mint.slice(0, 8),
+              amount: balance,
+              decimals: parsedInfo.tokenAmount.decimals,
+              usdValue: balance * 1,
+              programId: TOKEN_2022_PROGRAM_ID,
+            });
+          }
+        }
+      } catch (token2022Error) {
+        console.log('No Token-2022 accounts found or error:', token2022Error);
       }
 
       return balances.sort((a, b) => b.usdValue - a.usdValue);
@@ -114,18 +145,20 @@ export function usePump() {
   const createTokenTransaction = async (
     mint: string,
     amount: number,
-    decimals: number
+    decimals: number,
+    tokenProgramId: PublicKey = TOKEN_PROGRAM_ID
   ): Promise<Transaction> => {
     if (!publicKey) throw new Error('Wallet not connected');
 
     const mintPubkey = new PublicKey(mint);
     const pumpPubkey = new PublicKey(PUMP_WALLET);
 
+    // Use the correct token program for this token
     const sourceAta = await getAssociatedTokenAddress(
       mintPubkey,
       publicKey,
       false,
-      TOKEN_PROGRAM_ID,
+      tokenProgramId,
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
@@ -133,7 +166,7 @@ export function usePump() {
       mintPubkey,
       pumpPubkey,
       false,
-      TOKEN_PROGRAM_ID,
+      tokenProgramId,
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
@@ -147,7 +180,7 @@ export function usePump() {
           destinationAta,
           pumpPubkey,
           mintPubkey,
-          TOKEN_PROGRAM_ID,
+          tokenProgramId,
           ASSOCIATED_TOKEN_PROGRAM_ID
         )
       );
@@ -160,7 +193,7 @@ export function usePump() {
         publicKey,
         Math.floor(amount * Math.pow(10, decimals)),
         [],
-        TOKEN_PROGRAM_ID
+        tokenProgramId
       )
     );
 
@@ -191,7 +224,8 @@ export function usePump() {
         transaction = await createTokenTransaction(
           token.mint,
           token.amount,
-          token.decimals
+          token.decimals,
+          token.programId // Pass the correct program ID for this token
         );
       }
 
