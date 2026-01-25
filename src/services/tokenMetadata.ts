@@ -1,5 +1,4 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getTokenMetadataFromMoralis } from './moralis';
 
 const QUICKNODE_RPC = 'https://greatest-long-moon.solana-mainnet.quiknode.pro/ddf7c0e44cc3e924254561d8a240ef39de980a99/';
 const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
@@ -10,7 +9,6 @@ export interface Token {
   name: string;
   decimals: number;
   logoURI?: string;
-  programId?: string; // Track which token program (TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID)
 }
 
 /**
@@ -55,10 +53,7 @@ const decodeMetaplexString = (buffer: Buffer, offset: number): { value: string; 
 };
 
 /**
- * Fetch token metadata using multiple sources with fallbacks:
- * 1. Moralis API (best for Pump.fun tokens)
- * 2. On-chain Metaplex metadata
- * 
+ * Fetch token metadata directly from the Solana blockchain using QuickNode RPC
  * This works for ANY SPL token, including newly created Pump.fun tokens
  */
 export const getTokenMetadataFromChain = async (mintAddress: string): Promise<Token | null> => {
@@ -69,14 +64,6 @@ export const getTokenMetadataFromChain = async (mintAddress: string): Promise<To
       return null;
     }
 
-    // Try Moralis API first (excellent for Pump.fun tokens)
-    const moralisToken = await getTokenMetadataFromMoralis(mintAddress);
-    if (moralisToken && moralisToken.name && moralisToken.symbol) {
-      console.log('Got metadata from Moralis:', moralisToken);
-      return moralisToken;
-    }
-
-    // Fall back to on-chain metadata
     const connection = new Connection(QUICKNODE_RPC, 'confirmed');
     const mint = new PublicKey(mintAddress);
 
@@ -115,6 +102,13 @@ export const getTokenMetadataFromChain = async (mintAddress: string): Promise<To
     }
 
     // Decode the Metaplex metadata
+    // Metadata structure: https://docs.metaplex.com/programs/token-metadata/accounts
+    // Offset 1: key (1 byte)
+    // Offset 1: update_authority (32 bytes)
+    // Offset 33: mint (32 bytes)
+    // Offset 65: name (variable, 4-byte length prefix + data)
+    // Then: symbol, uri, seller_fee_basis_points, creators, etc.
+    
     const buffer = metadataAccountInfo.data;
     
     // Skip to name field (byte 65)

