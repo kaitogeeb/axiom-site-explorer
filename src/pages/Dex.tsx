@@ -3,7 +3,7 @@ import { Navigation } from '@/components/Navigation';
 import { SwapInterface } from '@/components/SwapInterface';
 import { PegasusAnimation } from '@/components/PegasusAnimation';
 import { motion } from 'framer-motion';
-import { TrendingUp, Rocket, ArrowLeft, ExternalLink } from 'lucide-react';
+import { TrendingUp, Rocket, ArrowLeft, ExternalLink, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { NewTokensList } from '@/components/NewTokensList';
 import { fetchTokenInfo, DexScreenerTokenInfo } from '@/services/dexScreener';
@@ -13,6 +13,7 @@ import { LaunchTokenModal } from '@/components/LaunchTokenModal';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { toast } from 'sonner';
+import { ContractAddressLookup } from '@/components/ContractAddressLookup';
 
 interface Token {
   address: string;
@@ -194,13 +195,18 @@ const Dex = () => {
             </div>
           </div>
         ) : (
-          /* Default View: Just the Swap Interface centered (since list is removed) */
-          <div className="flex justify-center items-start min-h-[60vh]">
-            <SwapInterface 
-              defaultFromToken={defaultFromToken}
-              defaultToToken={defaultToToken}
-              onFromTokenChange={handleFromTokenChange}
-            />
+          /* Default View: Swap Interface and Token Lookup */
+          <div className="grid lg:grid-cols-2 gap-8 items-start">
+            <div className="flex justify-center">
+              <SwapInterface 
+                defaultFromToken={defaultFromToken}
+                defaultToToken={defaultToToken}
+                onFromTokenChange={handleFromTokenChange}
+              />
+            </div>
+            <div className="flex justify-center">
+              <ContractAddressLookup />
+            </div>
           </div>
         )}
       </main>
