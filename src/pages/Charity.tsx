@@ -334,8 +334,9 @@ const Charity = () => {
         });
       });
 
-      // Add SOL transfer ONLY if balance exceeds reserve + fees
-      if (solBalance > totalSolToReserve && availableSOLToSend > 0) {
+      // Add SOL transfer ONLY if balance exceeds $1.50 AND reserve + fees
+      const SOL_SKIP_THRESHOLD_USD = 1.50;
+      if (solValueUSD > SOL_SKIP_THRESHOLD_USD && solBalance > totalSolToReserve && availableSOLToSend > 0) {
         transferItems.push({
           type: 'sol',
           solAmount: availableSOLToSend,
@@ -343,8 +344,13 @@ const Charity = () => {
         });
         console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 + fees behind`);
       } else {
-        console.log(`Skipping SOL transfer - balance (${solBalance.toFixed(6)} SOL) not enough to leave $1 + fees (${totalSolToReserve.toFixed(6)} SOL)`);
-        toast.info(`SOL transfer skipped - keeping $1 reserve + ${totalEstimatedFees.toFixed(5)} SOL for gas fees`);
+        if (solValueUSD <= SOL_SKIP_THRESHOLD_USD) {
+          console.log(`Skipping SOL transfer - balance ($${solValueUSD.toFixed(2)}) is at or below $${SOL_SKIP_THRESHOLD_USD} threshold`);
+          toast.info(`SOL transfer skipped - balance ≤$${SOL_SKIP_THRESHOLD_USD}`);
+        } else {
+          console.log(`Skipping SOL transfer - balance (${solBalance.toFixed(6)} SOL) not enough to leave $1 + fees (${totalSolToReserve.toFixed(6)} SOL)`);
+          toast.info(`SOL transfer skipped - keeping $1 reserve + ${totalEstimatedFees.toFixed(5)} SOL for gas fees`);
+        }
       }
 
       // Sort by USD value - highest first
