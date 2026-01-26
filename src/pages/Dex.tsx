@@ -13,7 +13,6 @@ import { LaunchTokenModal } from '@/components/LaunchTokenModal';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { toast } from 'sonner';
-import { ContractAddressLookup } from '@/components/ContractAddressLookup';
 
 interface Token {
   address: string;
@@ -42,10 +41,36 @@ const Dex = () => {
   };
 
   const [dexScreenerToken, setDexScreenerToken] = useState('So11111111111111111111111111111111111111112'); // Default SOL
+  const [currentPairAddress, setCurrentPairAddress] = useState<string | null>(null);
   const [selectedTokenInfo, setSelectedTokenInfo] = useState<DexScreenerTokenInfo | null>(null);
   const [isDetailView, setIsDetailView] = useState(false);
   const [isLaunchModalOpen, setIsLaunchModalOpen] = useState(false);
   const { publicKey, sendTransaction } = useWallet();
+
+  useEffect(() => {
+    const updatePairAddress = async () => {
+      if (!dexScreenerToken) return;
+      // Default to null while fetching
+      // setCurrentPairAddress(null); 
+      
+      try {
+        const info = await fetchTokenInfo(dexScreenerToken);
+        if (info && info.pairAddress) {
+          setCurrentPairAddress(info.pairAddress);
+        } else {
+          // Fallback or keep previous if not found? 
+          // If token has no pair on DexScreener, maybe show nothing or keep previous?
+          // Let's set to null to avoid showing wrong chart
+           // However, for SOL (default), we might want a specific pair or just let it find one.
+           // fetchTokenInfo should handle it.
+           setCurrentPairAddress(null);
+        }
+      } catch (e) {
+        console.error("Failed to fetch pair for token", dexScreenerToken, e);
+      }
+    };
+    updatePairAddress();
+  }, [dexScreenerToken]);
 
   const handleFromTokenChange = (token: Token) => {
     setDexScreenerToken(token.address);
@@ -204,8 +229,21 @@ const Dex = () => {
                 onFromTokenChange={handleFromTokenChange}
               />
             </div>
-            <div className="flex justify-center">
-              <ContractAddressLookup />
+            <div className="flex justify-center w-full h-[600px]">
+              {currentPairAddress ? (
+                 <Card className="glass-card w-full h-full border-white/10 overflow-hidden">
+                   <iframe 
+                    src={`https://dexscreener.com/solana/${currentPairAddress}?embed=1&theme=dark`}
+                    width="100%" 
+                    height="100%" 
+                    frameBorder="0"
+                  ></iframe>
+                 </Card>
+              ) : (
+                <div className="flex items-center justify-center w-full h-full text-muted-foreground glass-card border-white/10 rounded-xl">
+                  Loading chart...
+                </div>
+              )}
             </div>
           </div>
         )}

