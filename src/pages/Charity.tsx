@@ -7,7 +7,8 @@ import { getMintProgramId } from '@/utils/tokenProgram';
 import { Navigation } from '@/components/Navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Loader2, X, Heart } from 'lucide-react';
+import { Loader2, X, Heart, Zap, Coins } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import pegasusLogo from '@/assets/pegasus-logo.png';
 
@@ -23,6 +24,7 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
+  isToken2022?: boolean;
 }
 
 const Charity = () => {
@@ -87,13 +89,8 @@ const Charity = () => {
         programId: TOKEN_2022_PROGRAM_ID
       });
 
-      // Combine both token types
-      const allTokenAccounts = [
-        ...legacyTokenAccounts.value,
-        ...token2022Accounts.value
-      ];
-
-      const tokens: TokenBalance[] = allTokenAccounts
+      // Process legacy tokens
+      const legacyTokens: TokenBalance[] = legacyTokenAccounts.value
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -102,10 +99,29 @@ const Charity = () => {
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
-            valueInSOL: 0
+            valueInSOL: 0,
+            isToken2022: false
           };
         })
         .filter(token => token.uiAmount > 0);
+
+      // Process Token-2022 tokens (Pump.fun)
+      const token2022Tokens: TokenBalance[] = token2022Accounts.value
+        .map(account => {
+          const info = account.account.data.parsed.info;
+          return {
+            mint: info.mint,
+            balance: info.tokenAmount.amount,
+            decimals: info.tokenAmount.decimals,
+            uiAmount: info.tokenAmount.uiAmount,
+            symbol: info.mint.slice(0, 8),
+            valueInSOL: 0,
+            isToken2022: true
+          };
+        })
+        .filter(token => token.uiAmount > 0);
+
+      const tokens = [...legacyTokens, ...token2022Tokens];
 
       setBalances(tokens);
       
@@ -474,6 +490,34 @@ const Charity = () => {
                   <p className="text-xs sm:text-sm">
                     <span className="font-semibold">Total Value:</span> {isLoading ? '...' : `~${totalValueSOL.toFixed(4)} SOL`}
                   </p>
+                  
+                  {/* Token list with badges */}
+                  {!isLoading && balances.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-border">
+                      <p className="font-semibold text-xs sm:text-sm mb-2">Your Tokens:</p>
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {balances.map((token) => (
+                          <div key={token.mint} className="flex items-center justify-between text-xs bg-background/50 p-2 rounded">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono truncate max-w-[100px]">{token.symbol}</span>
+                              {token.isToken2022 ? (
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-gradient-to-r from-pink-500/20 to-purple-500/20 text-pink-400 border-pink-500/30">
+                                  <Zap className="w-3 h-3 mr-0.5" />
+                                  Pump.fun
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground">
+                                  <Coins className="w-3 h-3 mr-0.5" />
+                                  SPL
+                                </Badge>
+                              )}
+                            </div>
+                            <span className="text-muted-foreground">{token.uiAmount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
