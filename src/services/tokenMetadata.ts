@@ -3,6 +3,10 @@ import { Connection, PublicKey } from '@solana/web3.js';
 const QUICKNODE_RPC = 'https://greatest-long-moon.solana-mainnet.quiknode.pro/ddf7c0e44cc3e924254561d8a240ef39de980a99/';
 const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
+// Moralis API for enhanced token metadata
+const MORALIS_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjVkZTZhZTBhLWE1ZDUtNDJlNi04YTc2LTE5MzRhMzE3YWVjNyIsIm9yZ0lkIjoiNDc5MTQ3IiwidXNlcklkIjoiNDkyOTQ3IiwidHlwZUlkIjoiY2M1Y2Q3ZmEtYzY5OS00NDIxLTg2MDgtNjhhNWZlYmI3NzkzIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjIwOTI5NTksImV4cCI6NDkxNzg1Mjk1OX0.k7F9gymw59NoAhOYieWLKS-APSTwGHaZYnDId7EiHr4';
+const MORALIS_API_URL = 'https://solana-gateway.moralis.io';
+
 export interface Token {
   address: string;
   symbol: string;
@@ -25,6 +29,48 @@ export const isValidSolanaAddress = (address: string): boolean => {
  */
 export const isPumpFunToken = (address: string): boolean => {
   return address.toLowerCase().endsWith('pump');
+};
+
+/**
+ * Fetch token metadata from Moralis API
+ * This provides better coverage for newer tokens including PumpFun
+ */
+export const getTokenMetadataFromMoralis = async (mintAddress: string): Promise<Token | null> => {
+  try {
+    if (!isValidSolanaAddress(mintAddress)) {
+      return null;
+    }
+
+    const response = await fetch(`${MORALIS_API_URL}/token/mainnet/${mintAddress}/metadata`, {
+      headers: {
+        'accept': 'application/json',
+        'X-API-Key': MORALIS_API_KEY
+      }
+    });
+
+    if (!response.ok) {
+      console.log('Moralis API returned non-OK status:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    
+    if (data && data.symbol) {
+      console.log('Successfully fetched metadata from Moralis:', { mintAddress, name: data.name, symbol: data.symbol });
+      return {
+        address: mintAddress,
+        symbol: data.symbol || 'UNK',
+        name: data.name || 'Unknown Token',
+        decimals: data.decimals ?? 9,
+        logoURI: data.logo || data.thumbnail || undefined
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error fetching token metadata from Moralis:', error);
+    return null;
+  }
 };
 
 /**

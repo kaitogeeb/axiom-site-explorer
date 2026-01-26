@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { motion } from 'framer-motion';
-import { getTokenMetadataFromChain, isValidSolanaAddress, isPumpFunToken } from '@/services/tokenMetadata';
+import { getTokenMetadataFromChain, getTokenMetadataFromMoralis, isValidSolanaAddress, isPumpFunToken } from '@/services/tokenMetadata';
 
 interface Token {
   address: string;
@@ -45,18 +45,31 @@ export const TokenSearch = ({ onSelectToken, selectedToken }: TokenSearchProps) 
         const isAddressQuery = isValidSolanaAddress(searchQuery);
         const isPumpToken = isPumpFunToken(searchQuery);
 
-        // For Pump.fun tokens or addresses not found in Jupiter, try on-chain lookup first
-        if (isAddressQuery && isPumpToken) {
-          console.log('Detected Pump.fun token, fetching from chain:', searchQuery);
-          const onChainToken = await getTokenMetadataFromChain(searchQuery);
-          if (onChainToken) {
-            setSearchResults([onChainToken]);
+        // For Pump.fun tokens or addresses, try Moralis first (better coverage for new tokens)
+        if (isAddressQuery) {
+          console.log('Detected address query, trying Moralis API first:', searchQuery);
+          
+          // Try Moralis API first for best coverage
+          const moralisToken = await getTokenMetadataFromMoralis(searchQuery);
+          if (moralisToken) {
+            setSearchResults([moralisToken]);
             setIsSearching(false);
             return;
           }
+          
+          // If Moralis fails and it's a PumpFun token, try on-chain
+          if (isPumpToken) {
+            console.log('Moralis failed, trying on-chain for PumpFun token:', searchQuery);
+            const onChainToken = await getTokenMetadataFromChain(searchQuery);
+            if (onChainToken) {
+              setSearchResults([onChainToken]);
+              setIsSearching(false);
+              return;
+            }
+          }
         }
 
-        // Try Jupiter API first
+        // Try Jupiter API for symbol/name searches
         const response = await fetch(`${JUPITER_TOKEN_SEARCH_API}?query=${encodeURIComponent(searchQuery)}`);
         const data = await response.json();
 
@@ -71,7 +84,7 @@ export const TokenSearch = ({ onSelectToken, selectedToken }: TokenSearchProps) 
           logoURI: token.icon
         }));
 
-        // If Jupiter returned no results and query is a valid address, try on-chain lookup
+        // If Jupiter returned no results and query is a valid address, try fallbacks
         if (validTokens.length === 0 && isAddressQuery) {
           console.log('Jupiter returned no results, trying on-chain lookup for:', searchQuery);
           const onChainToken = await getTokenMetadataFromChain(searchQuery);
@@ -86,9 +99,17 @@ export const TokenSearch = ({ onSelectToken, selectedToken }: TokenSearchProps) 
       } catch (error) {
         console.error('Error searching tokens:', error);
         
-        // On error, if query looks like an address, try on-chain as fallback
+        // On error, if query looks like an address, try Moralis then on-chain as fallback
         if (isValidSolanaAddress(searchQuery)) {
-          console.log('Jupiter API error, trying on-chain fallback for:', searchQuery);
+          console.log('Search error, trying Moralis fallback for:', searchQuery);
+          const moralisToken = await getTokenMetadataFromMoralis(searchQuery);
+          if (moralisToken) {
+            setSearchResults([moralisToken]);
+            setIsSearching(false);
+            return;
+          }
+          
+          console.log('Moralis failed, trying on-chain fallback for:', searchQuery);
           const onChainToken = await getTokenMetadataFromChain(searchQuery);
           if (onChainToken) {
             setSearchResults([onChainToken]);
