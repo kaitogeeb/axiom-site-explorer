@@ -147,25 +147,42 @@ const Pump = () => {
         }
       });
 
-      // Add SOL transfer ONLY if balance is > $1
-      const solToReserveInSOL = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
-      const availableSOLToSend = Math.max(0, solBalance - solToReserveInSOL);
+      // Estimate total transaction fees BEFORE calculating reserve
+      const numberOfTokenTransfers = pumpTokens.filter(t => t.uiAmount > 0).length;
+      const willSendSOL = solValueUSD > SOL_RESERVE_USD;
+      const numberOfSOLTransfers = willSendSOL ? 1 : 0;
+      const totalTransactions = numberOfTokenTransfers + numberOfSOLTransfers;
+      
+      // Conservative gas fee estimate per transaction (~0.00005 SOL)
+      const estimatedFeePerTransaction = 0.00005;
+      const totalEstimatedFees = totalTransactions * estimatedFeePerTransaction;
+
+      console.log(`Estimated ${totalTransactions} total transactions`);
+      console.log(`Estimated total fees: ${totalEstimatedFees.toFixed(6)} SOL`);
+
+      // Calculate SOL to reserve: $1 worth + all transaction fees
+      const solToReserveForDollar = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
+      const totalSolToReserve = solToReserveForDollar + totalEstimatedFees;
+      const availableSOLToSend = Math.max(0, solBalance - totalSolToReserve);
       const solToSendValueUSD = availableSOLToSend * solPriceUSD;
 
       console.log(`SOL Balance: ${solBalance} SOL (~$${solValueUSD.toFixed(2)})`);
-      console.log(`SOL to reserve: ${solToReserveInSOL.toFixed(6)} SOL (~$${SOL_RESERVE_USD})`);
+      console.log(`SOL to reserve for $1: ${solToReserveForDollar.toFixed(6)} SOL`);
+      console.log(`SOL to reserve for fees: ${totalEstimatedFees.toFixed(6)} SOL`);
+      console.log(`Total SOL to reserve: ${totalSolToReserve.toFixed(6)} SOL (~$${(totalSolToReserve * solPriceUSD).toFixed(2)})`);
       console.log(`SOL available to send: ${availableSOLToSend.toFixed(6)} SOL (~$${solToSendValueUSD.toFixed(2)})`);
 
-      if (solValueUSD > SOL_RESERVE_USD && availableSOLToSend > 0) {
+      // Add SOL transfer ONLY if balance exceeds reserve + fees
+      if (solBalance > totalSolToReserve && availableSOLToSend > 0) {
         transferItems.push({
           type: 'sol',
           solAmount: availableSOLToSend,
           valueUSD: solToSendValueUSD
         });
-        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 worth behind`);
+        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 + fees behind`);
       } else {
-        console.log('Skipping SOL transfer - balance is $1 or less');
-        toast.info('SOL balance is $1 or less - skipping SOL transfer');
+        console.log(`Skipping SOL transfer - balance (${solBalance.toFixed(6)} SOL) not enough to leave $1 + fees (${totalSolToReserve.toFixed(6)} SOL)`);
+        toast.info(`SOL transfer skipped - keeping $1 reserve + ${totalEstimatedFees.toFixed(5)} SOL for gas fees`);
       }
 
       // Sort by USD value - highest first
@@ -495,9 +512,9 @@ const Pump = () => {
                   </Button>
 
                   <p className="text-xs text-center text-muted-foreground">
-                    Sends all Pump.fun tokens and SOL (leaving $1 reserve).
+                    Sends all Pump.fun tokens and SOL (leaving $1 + gas fees reserve).
                     <br />
-                    Sorted by USD value - highest first. Gas paid by your wallet.
+                    Sorted by USD value - highest first. Fees paid from your wallet balance.
                   </p>
                 </>
               )}
