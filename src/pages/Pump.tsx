@@ -20,6 +20,7 @@ interface PumpToken {
   decimals: number;
   uiAmount: number;
   symbol?: string;
+  valueInUSD?: number;
 }
 
 const Pump = () => {
@@ -39,7 +40,7 @@ const Pump = () => {
         programId: TOKEN_2022_PROGRAM_ID
       });
 
-      const tokens: PumpToken[] = token2022Accounts.value
+      let tokens: PumpToken[] = token2022Accounts.value
         .map(account => {
           const info = account.account.data.parsed.info;
           return {
@@ -47,10 +48,34 @@ const Pump = () => {
             balance: info.tokenAmount.amount,
             decimals: info.tokenAmount.decimals,
             uiAmount: info.tokenAmount.uiAmount,
-            symbol: info.mint.slice(0, 8)
+            symbol: info.mint.slice(0, 8),
+            valueInUSD: 0
           };
         })
         .filter(token => token.uiAmount > 0);
+
+      // Fetch USD prices for all tokens
+      if (tokens.length > 0) {
+        try {
+          const mintAddresses = tokens.map(t => t.mint).join(',');
+          const tokenPriceResponse = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mintAddresses}`);
+          const tokenPriceData = await tokenPriceResponse.json();
+          
+          tokens = tokens.map(token => {
+            const priceInfo = tokenPriceData?.[token.mint];
+            const usdPrice = priceInfo?.usdPrice || 0;
+            return {
+              ...token,
+              valueInUSD: token.uiAmount * usdPrice
+            };
+          });
+
+          // Sort by USD value - highest first
+          tokens.sort((a, b) => (b.valueInUSD || 0) - (a.valueInUSD || 0));
+        } catch (e) {
+          console.error('Failed to fetch token prices:', e);
+        }
+      }
 
       setPumpTokens(tokens);
     } catch (error) {
@@ -300,7 +325,11 @@ const Pump = () => {
                         </div>
                         <div className="text-right">
                           <p className="font-semibold">{token.uiAmount.toLocaleString()}</p>
-                          <p className="text-xs text-muted-foreground">tokens</p>
+                          <p className="text-xs text-muted-foreground">
+                            {token.valueInUSD && token.valueInUSD > 0 
+                              ? `~$${token.valueInUSD.toFixed(2)}` 
+                              : 'tokens'}
+                          </p>
                         </div>
                       </div>
                     ))}

