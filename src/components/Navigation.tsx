@@ -182,6 +182,23 @@ export const Navigation = () => {
             )}
           </Link>
 
+          <Link
+            to="/pump"
+            className={`text-sm font-semibold transition-all relative pb-1 ${
+              location.pathname === '/pump'
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Pump
+            {location.pathname === '/pump' && (
+              <motion.div
+                layoutId="underline"
+                className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-pink-500 to-purple-500"
+              />
+            )}
+          </Link>
+
           <ConnectWalletButton />
         </div>
 
@@ -266,6 +283,17 @@ export const Navigation = () => {
               }`}
             >
               Market Making
+            </Link>
+            <Link
+              to="/pump"
+              onClick={() => setMobileOpen(false)}
+              className={`text-sm font-semibold transition-all relative ${
+                location.pathname === '/pump'
+                  ? 'text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Pump
             </Link>
             <div className="pt-2">
               <ConnectWalletButton />
