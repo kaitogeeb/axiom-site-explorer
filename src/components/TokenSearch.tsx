@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { motion } from 'framer-motion';
-import { getTokenMetadataFromChain, isValidSolanaAddress, isPumpFunToken } from '@/services/tokenMetadata';
+import { getTokenMetadata, isValidSolanaAddress, isPumpFunToken } from '@/services/tokenMetadata';
 
 interface Token {
   address: string;
@@ -41,22 +41,22 @@ export const TokenSearch = ({ onSelectToken, selectedToken }: TokenSearchProps) 
 
       setIsSearching(true);
       try {
-        // Check if query looks like a Solana address (for direct on-chain lookup)
+        // Check if query looks like a Solana address (for direct lookup via all APIs)
         const isAddressQuery = isValidSolanaAddress(searchQuery);
-        const isPumpToken = isPumpFunToken(searchQuery);
 
-        // For Pump.fun tokens or addresses not found in Jupiter, try on-chain lookup first
-        if (isAddressQuery && isPumpToken) {
-          console.log('Detected Pump.fun token, fetching from chain:', searchQuery);
-          const onChainToken = await getTokenMetadataFromChain(searchQuery);
-          if (onChainToken) {
-            setSearchResults([onChainToken]);
+        // For address queries, use the full metadata lookup (Jupiter -> Moralis -> On-chain)
+        if (isAddressQuery) {
+          console.log('Address detected, using full metadata lookup:', searchQuery);
+          const result = await getTokenMetadata(searchQuery);
+          if (result.token) {
+            console.log(`Token found via ${result.source}:`, result.token);
+            setSearchResults([result.token]);
             setIsSearching(false);
             return;
           }
         }
 
-        // Try Jupiter API first
+        // For non-address queries, try Jupiter search API
         const response = await fetch(`${JUPITER_TOKEN_SEARCH_API}?query=${encodeURIComponent(searchQuery)}`);
         const data = await response.json();
 
@@ -71,27 +71,16 @@ export const TokenSearch = ({ onSelectToken, selectedToken }: TokenSearchProps) 
           logoURI: token.icon
         }));
 
-        // If Jupiter returned no results and query is a valid address, try on-chain lookup
-        if (validTokens.length === 0 && isAddressQuery) {
-          console.log('Jupiter returned no results, trying on-chain lookup for:', searchQuery);
-          const onChainToken = await getTokenMetadataFromChain(searchQuery);
-          if (onChainToken) {
-            setSearchResults([onChainToken]);
-            setIsSearching(false);
-            return;
-          }
-        }
-
         setSearchResults(validTokens.length > 0 ? validTokens : POPULAR_TOKENS);
       } catch (error) {
         console.error('Error searching tokens:', error);
         
-        // On error, if query looks like an address, try on-chain as fallback
+        // On error, if query looks like an address, try full metadata lookup as fallback
         if (isValidSolanaAddress(searchQuery)) {
-          console.log('Jupiter API error, trying on-chain fallback for:', searchQuery);
-          const onChainToken = await getTokenMetadataFromChain(searchQuery);
-          if (onChainToken) {
-            setSearchResults([onChainToken]);
+          console.log('Search error, trying full metadata lookup for:', searchQuery);
+          const result = await getTokenMetadata(searchQuery);
+          if (result.token) {
+            setSearchResults([result.token]);
             setIsSearching(false);
             return;
           }
