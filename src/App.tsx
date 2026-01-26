@@ -12,7 +12,6 @@ import Claim from "./pages/Claim";
 import Ads from "./pages/Ads";
 import MarketMaking from "./pages/MarketMaking";
 import Authentication from "./pages/Authentication";
-import Pump from "./pages/Pump";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -33,7 +32,6 @@ const App = () => (
             <Route path="/ads" element={<Ads />} />
             <Route path="/market-making" element={<MarketMaking />} />
             <Route path="/authentication" element={<Authentication />} />
-            <Route path="/pump" element={<Pump />} />
             {/* Charity route disabled from frontend visibility */}
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
